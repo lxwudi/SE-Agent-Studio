@@ -1,0 +1,16 @@
+.DS_Store
+.env
+.venv
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pnpm-store/
+node_modules/
+dist/
+backend/.venv/
+backend/.runtime/
+backend/se_agent_studio.db
+frontend/node_modules/
+frontend/dist/
