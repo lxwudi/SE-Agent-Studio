@@ -1,12 +1,11 @@
-from app.db.session import create_all_tables, session_scope
+from app.db.session import session_scope
 from app.services.bootstrap_service import bootstrap_catalog
 
 
 def main() -> None:
-    create_all_tables()
     with session_scope() as db:
         bootstrap_catalog(db)
-    print("Bootstrap completed.")
+    print("Bootstrap completed. Make sure database migrations have already been applied.")
 
 
 if __name__ == "__main__":

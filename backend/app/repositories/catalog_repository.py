@@ -34,6 +34,14 @@ class CatalogRepository:
         )
         return self.db.scalar(stmt)
 
+    def get_workflow_by_id(self, workflow_id: int) -> Optional[WorkflowTemplate]:
+        stmt = (
+            select(WorkflowTemplate)
+            .options(selectinload(WorkflowTemplate.steps))
+            .where(WorkflowTemplate.id == workflow_id)
+        )
+        return self.db.scalar(stmt)
+
     def latest_prompt_version(self, agent_profile: AgentProfile) -> Optional[PromptTemplateVersion]:
         if not agent_profile.prompt_versions:
             return None

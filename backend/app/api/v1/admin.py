@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_admin_user
 from app.db.session import get_db
 from app.schemas.catalog import AgentProfileDetail, AgentProfilePatch, WorkflowTemplateDetail, WorkflowTemplatePatch
-from app.services.catalog_service import CatalogService
+from app.services.catalog_service import CatalogService, InvalidWorkflowTemplateError
 
 
 router = APIRouter(dependencies=[Depends(get_admin_user)])
@@ -34,7 +34,10 @@ def update_workflow(
     payload: WorkflowTemplatePatch,
     db: Session = Depends(get_db),
 ) -> WorkflowTemplateDetail:
-    workflow = CatalogService(db).update_workflow(workflow_code, payload)
+    try:
+        workflow = CatalogService(db).update_workflow(workflow_code, payload)
+    except InvalidWorkflowTemplateError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if not workflow:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
     return workflow

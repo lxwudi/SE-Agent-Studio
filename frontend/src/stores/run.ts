@@ -36,11 +36,13 @@ export const useRunStore = defineStore("runStore", () => {
   async function requestCancel(runUid: string) {
     const { data } = await cancelRun(runUid);
     currentRun.value = data;
+    return data;
   }
 
   async function requestResume(runUid: string) {
     const { data } = await resumeRun(runUid);
     currentRun.value = data;
+    return data;
   }
 
   function appendEvent(event: RunEvent) {
@@ -61,4 +63,3 @@ export const useRunStore = defineStore("runStore", () => {
     appendEvent,
   };
 });
-

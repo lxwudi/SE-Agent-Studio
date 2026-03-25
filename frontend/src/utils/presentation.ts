@@ -32,6 +32,7 @@ const agentLabels: Record<string, string> = {
 
 const eventSourceLabels: Record<string, string> = {
   TechnicalDesignFlow: "设计流程",
+  RunService: "运行控制",
   RequirementAnalysisCrew: "需求分析",
   ArchitectureDesignCrew: "架构设计",
   BackendDesignCrew: "后端设计",
@@ -43,10 +44,12 @@ const eventSourceLabels: Record<string, string> = {
 
 const eventTypeLabels: Record<string, string> = {
   "flow.started": "任务已启动",
+  "flow.cancel_requested": "已请求取消",
   "flow.completed": "任务已完成",
   "flow.cancelled": "任务已取消",
   "task.started": "阶段开始",
   "task.completed": "阶段完成",
+  "task.cancelled": "阶段已取消",
   "task.failed": "阶段失败",
 };
 

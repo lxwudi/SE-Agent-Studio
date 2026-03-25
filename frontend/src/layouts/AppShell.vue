@@ -22,6 +22,7 @@
 
       <nav class="sidebar-nav">
         <RouterLink class="sidebar-link" to="/projects">项目空间</RouterLink>
+        <RouterLink class="sidebar-link" to="/settings/llm">模型配置</RouterLink>
         <RouterLink class="sidebar-link" to="/admin">管理配置</RouterLink>
       </nav>
 
@@ -91,6 +92,13 @@ const shellMeta = computed(() => {
       kicker: "系统配置",
       title: "查看角色与流程模板",
       description: "这里展示当前平台启用的角色配置和可用流程，便于统一管理。",
+    };
+  }
+  if (route.path.startsWith("/settings/llm")) {
+    return {
+      kicker: "模型配置",
+      title: "为当前账号接入自己的云端模型",
+      description: "在这里保存你的 API Key、接口地址和默认模型，运行时会优先使用这套配置。",
     };
   }
   if (route.path.startsWith("/projects/")) {

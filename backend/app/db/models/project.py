@@ -29,6 +29,11 @@ class User(Base):
     )
 
     projects: Mapped[List["Project"]] = relationship(back_populates="owner")
+    llm_config: Mapped[Optional["UserLLMConfig"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
 
 class Project(Base):

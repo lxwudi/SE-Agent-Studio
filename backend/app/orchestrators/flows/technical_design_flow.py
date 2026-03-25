@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.clock import utc_now
 from app.core.config import settings
-from app.db.models import Artifact, FlowRun, RunEvent, TaskRun
+from app.db.models import Artifact, FlowRun, RunEvent, TaskRun, WorkflowTemplate
 from app.orchestrators.agents.agent_factory import AgentFactory, ResolvedAgentProfile
 from app.orchestrators.guardrails.architecture_guardrails import validate_architecture_blueprint
 from app.orchestrators.guardrails.requirement_guardrails import validate_requirement_spec
@@ -26,7 +27,9 @@ from app.orchestrators.outputs.requirement_models import (
     TaskItem,
 )
 from app.orchestrators.runtime import CrewAIStageRunner
+from app.repositories.catalog_repository import CatalogRepository
 from app.repositories.run_repository import RunRepository
+from app.services.llm_config_service import LLMConfigService, RuntimeLLMConfig
 
 
 StageHandler = Callable[[ProjectFlowState], Dict[str, Any]]
@@ -39,6 +42,7 @@ class StageDefinition:
     stage_name: str
     crew_name: str
     agent_code: str
+    parallel_group: Optional[str]
     artifact_type: str
     artifact_title: str
     handler: StageHandler
@@ -57,114 +61,196 @@ class StageExecutionResult:
     completion_tokens: int = 0
 
 
+@dataclass
+class PreparedStageExecution:
+    stage: StageDefinition
+    resolved_agent: ResolvedAgentProfile
+    prompt_snapshot: Dict[str, Any]
+    task_run: TaskRun
+    state_snapshot: ProjectFlowState
+
+
+@dataclass(frozen=True)
+class StageTemplate:
+    step_code: str
+    stage_name: str
+    crew_name: str
+    default_agent_code: str
+    artifact_type: str
+    artifact_title: str
+    handler_name: str
+    response_model: type[BaseModel]
+    goal: str
+    expected_output: str
+    apply_output_name: str
+
+
+STAGE_TEMPLATE_REGISTRY: dict[str, StageTemplate] = {
+    "requirements": StageTemplate(
+        step_code="requirements",
+        stage_name="requirements",
+        crew_name="RequirementAnalysisCrew",
+        default_agent_code="product_manager",
+        artifact_type="requirement_spec",
+        artifact_title="需求规格说明",
+        handler_name="_build_requirements",
+        response_model=RequirementsStageOutput,
+        goal="Analyze the raw project brief and transform it into a reusable requirement package for downstream engineering stages.",
+        expected_output="Return a complete RequirementsStageOutput with both requirement_spec and task_breakdown filled in. Every list must be concrete and non-empty.",
+        apply_output_name="_apply_requirements_output",
+    ),
+    "architecture": StageTemplate(
+        step_code="architecture",
+        stage_name="architecture",
+        crew_name="ArchitectureDesignCrew",
+        default_agent_code="software_architect",
+        artifact_type="architecture_blueprint",
+        artifact_title="系统架构蓝图",
+        handler_name="_build_architecture",
+        response_model=ArchitectureBlueprint,
+        goal="Design the system architecture, deployment shape, and key ADR-level decisions for the project.",
+        expected_output="Return a complete ArchitectureBlueprint with concrete modules, data flow, risks, and ADR items.",
+        apply_output_name="_apply_architecture_output",
+    ),
+    "backend_design": StageTemplate(
+        step_code="backend_design",
+        stage_name="backend_design",
+        crew_name="BackendDesignCrew",
+        default_agent_code="backend_architect",
+        artifact_type="backend_design",
+        artifact_title="后端技术设计",
+        handler_name="_build_backend_design",
+        response_model=BackendDesign,
+        goal="Produce the backend service boundaries, data model, API contracts, async strategy, and observability plan.",
+        expected_output="Return a complete BackendDesign with explicit service boundaries, entities, API contracts, and implementation risks.",
+        apply_output_name="_apply_backend_output",
+    ),
+    "frontend_design": StageTemplate(
+        step_code="frontend_design",
+        stage_name="frontend_design",
+        crew_name="FrontendDesignCrew",
+        default_agent_code="frontend_developer",
+        artifact_type="frontend_blueprint",
+        artifact_title="前端技术蓝图",
+        handler_name="_build_frontend_design",
+        response_model=FrontendBlueprint,
+        goal="Translate the architecture into a usable frontend blueprint covering pages, components, state slices, and API bindings.",
+        expected_output="Return a complete FrontendBlueprint with concrete page tree, component map, state slices, and real-time strategy.",
+        apply_output_name="_apply_frontend_output",
+    ),
+    "ai_design": StageTemplate(
+        step_code="ai_design",
+        stage_name="ai_design",
+        crew_name="AIPlatformDesignCrew",
+        default_agent_code="ai_engineer",
+        artifact_type="ai_integration_spec",
+        artifact_title="AI 平台集成设计",
+        handler_name="_build_ai_design",
+        response_model=AIIntegrationSpec,
+        goal="Define how AI models, prompts, output schemas, and guardrails should be integrated into the platform runtime.",
+        expected_output="Return a complete AIIntegrationSpec with provider strategy, model policy, prompt policy, output schemas, evaluation plan, and guardrails.",
+        apply_output_name="_apply_ai_output",
+    ),
+    "quality_assurance": StageTemplate(
+        step_code="quality_assurance",
+        stage_name="quality_assurance",
+        crew_name="QualityAssuranceCrew",
+        default_agent_code="api_tester",
+        artifact_type="api_test_plan",
+        artifact_title="测试与验收方案",
+        handler_name="_build_quality_plan",
+        response_model=ApiTestPlan,
+        goal="Create the API and acceptance test plan that validates the project end-to-end.",
+        expected_output="Return a complete ApiTestPlan with coverage focus, scenarios, acceptance criteria, and risk checklist.",
+        apply_output_name="_apply_quality_output",
+    ),
+    "consistency_review": StageTemplate(
+        step_code="consistency_review",
+        stage_name="consistency_review",
+        crew_name="ConsistencyReviewCrew",
+        default_agent_code="software_architect",
+        artifact_type="review_summary",
+        artifact_title="一致性评审总结",
+        handler_name="_build_review_summary",
+        response_model=ConsistencyReviewSummary,
+        goal="Review cross-stage consistency and identify conflicts, aligned areas, and next actions.",
+        expected_output="Return a complete ConsistencyReviewSummary with an explicit coherence score, aligned areas, conflicts, and next actions.",
+        apply_output_name="_apply_review_output",
+    ),
+}
+
+
 class TechnicalDesignFlow:
     def __init__(self, db: Session, flow_run: FlowRun):
         self.db = db
         self.flow_run = flow_run
         self.repository = RunRepository(db)
+        self.catalog_repository = CatalogRepository(db)
         self.agent_factory = AgentFactory(db)
-        self.crewai_runner = CrewAIStageRunner()
+        workflow = self._load_workflow()
+        self.runtime_config = self._load_runtime_config()
+        self.crewai_runner = CrewAIStageRunner(runtime_config=self.runtime_config)
         self.state = ProjectFlowState(
             project_id=flow_run.project_id,
             flow_run_uid=flow_run.run_uid,
-            workflow_code="technical_design_v1",
+            workflow_code=workflow.workflow_code,
             requirement_text=flow_run.input_requirement,
             current_stage=flow_run.current_stage,
         )
         self.runtime_mode = self._resolve_runtime_mode()
-        self.stages: List[StageDefinition] = [
-            StageDefinition(
-                step_code="requirements",
-                stage_name="requirements",
-                crew_name="RequirementAnalysisCrew",
-                agent_code="product_manager",
-                artifact_type="requirement_spec",
-                artifact_title="需求规格说明",
-                handler=self._build_requirements,
-                response_model=RequirementsStageOutput,
-                goal="Analyze the raw project brief and transform it into a reusable requirement package for downstream engineering stages.",
-                expected_output="Return a complete RequirementsStageOutput with both requirement_spec and task_breakdown filled in. Every list must be concrete and non-empty.",
-                apply_output=self._apply_requirements_output,
-            ),
-            StageDefinition(
-                step_code="architecture",
-                stage_name="architecture",
-                crew_name="ArchitectureDesignCrew",
-                agent_code="software_architect",
-                artifact_type="architecture_blueprint",
-                artifact_title="系统架构蓝图",
-                handler=self._build_architecture,
-                response_model=ArchitectureBlueprint,
-                goal="Design the system architecture, deployment shape, and key ADR-level decisions for the project.",
-                expected_output="Return a complete ArchitectureBlueprint with concrete modules, data flow, risks, and ADR items.",
-                apply_output=self._apply_architecture_output,
-            ),
-            StageDefinition(
-                step_code="backend_design",
-                stage_name="backend_design",
-                crew_name="BackendDesignCrew",
-                agent_code="backend_architect",
-                artifact_type="backend_design",
-                artifact_title="后端技术设计",
-                handler=self._build_backend_design,
-                response_model=BackendDesign,
-                goal="Produce the backend service boundaries, data model, API contracts, async strategy, and observability plan.",
-                expected_output="Return a complete BackendDesign with explicit service boundaries, entities, API contracts, and implementation risks.",
-                apply_output=self._apply_backend_output,
-            ),
-            StageDefinition(
-                step_code="frontend_design",
-                stage_name="frontend_design",
-                crew_name="FrontendDesignCrew",
-                agent_code="frontend_developer",
-                artifact_type="frontend_blueprint",
-                artifact_title="前端技术蓝图",
-                handler=self._build_frontend_design,
-                response_model=FrontendBlueprint,
-                goal="Translate the architecture into a usable frontend blueprint covering pages, components, state slices, and API bindings.",
-                expected_output="Return a complete FrontendBlueprint with concrete page tree, component map, state slices, and real-time strategy.",
-                apply_output=self._apply_frontend_output,
-            ),
-            StageDefinition(
-                step_code="ai_design",
-                stage_name="ai_design",
-                crew_name="AIPlatformDesignCrew",
-                agent_code="ai_engineer",
-                artifact_type="ai_integration_spec",
-                artifact_title="AI 平台集成设计",
-                handler=self._build_ai_design,
-                response_model=AIIntegrationSpec,
-                goal="Define how AI models, prompts, output schemas, and guardrails should be integrated into the platform runtime.",
-                expected_output="Return a complete AIIntegrationSpec with provider strategy, model policy, prompt policy, output schemas, evaluation plan, and guardrails.",
-                apply_output=self._apply_ai_output,
-            ),
-            StageDefinition(
-                step_code="quality_assurance",
-                stage_name="quality_assurance",
-                crew_name="QualityAssuranceCrew",
-                agent_code="api_tester",
-                artifact_type="api_test_plan",
-                artifact_title="测试与验收方案",
-                handler=self._build_quality_plan,
-                response_model=ApiTestPlan,
-                goal="Create the API and acceptance test plan that validates the project end-to-end.",
-                expected_output="Return a complete ApiTestPlan with coverage focus, scenarios, acceptance criteria, and risk checklist.",
-                apply_output=self._apply_quality_output,
-            ),
-            StageDefinition(
-                step_code="consistency_review",
-                stage_name="consistency_review",
-                crew_name="ConsistencyReviewCrew",
-                agent_code="software_architect",
-                artifact_type="review_summary",
-                artifact_title="一致性评审总结",
-                handler=self._build_review_summary,
-                response_model=ConsistencyReviewSummary,
-                goal="Review cross-stage consistency and identify conflicts, aligned areas, and next actions.",
-                expected_output="Return a complete ConsistencyReviewSummary with an explicit coherence score, aligned areas, conflicts, and next actions.",
-                apply_output=self._apply_review_output,
-            ),
-        ]
+        self.stages = self._build_stages(workflow)
+
+    def _load_workflow(self) -> WorkflowTemplate:
+        if not self.flow_run.workflow_template_id:
+            raise ValueError("当前运行没有绑定 workflow_template_id。")
+
+        workflow = self.catalog_repository.get_workflow_by_id(self.flow_run.workflow_template_id)
+        if workflow is None:
+            raise ValueError(f"未找到 id={self.flow_run.workflow_template_id} 的 workflow 配置。")
+        if not workflow.enabled:
+            raise ValueError(f"Workflow '{workflow.workflow_code}' 当前已停用，无法执行。")
+        if not workflow.steps:
+            raise ValueError(f"Workflow '{workflow.workflow_code}' 没有可执行步骤。")
+        return workflow
+
+    def _load_runtime_config(self) -> RuntimeLLMConfig | None:
+        project = self.flow_run.project
+        if project is None:
+            raise ValueError("当前运行缺少关联项目，无法解析模型配置。")
+        return LLMConfigService(self.db).get_runtime_config_for_user(project.owner_id)
+
+    def _build_stages(self, workflow: WorkflowTemplate) -> List[StageDefinition]:
+        stages: List[StageDefinition] = []
+        for step in sorted(workflow.steps, key=lambda item: item.sort_order):
+            template = STAGE_TEMPLATE_REGISTRY.get(step.step_code)
+            if template is None:
+                raise ValueError(
+                    f"Workflow '{workflow.workflow_code}' 包含当前版本不支持的步骤 '{step.step_code}'。"
+                )
+            if step.step_type != "crew":
+                raise ValueError(
+                    f"Workflow '{workflow.workflow_code}' 的步骤 '{step.step_code}' 不是可执行的 crew 类型。"
+                )
+
+            handler = getattr(self, template.handler_name)
+            apply_output = getattr(self, template.apply_output_name)
+            stages.append(
+                StageDefinition(
+                    step_code=step.step_code,
+                    stage_name=template.stage_name,
+                    crew_name=template.crew_name,
+                    agent_code=step.agent_code or template.default_agent_code,
+                    parallel_group=step.parallel_group,
+                    artifact_type=template.artifact_type,
+                    artifact_title=template.artifact_title,
+                    handler=handler,
+                    response_model=template.response_model,
+                    goal=template.goal,
+                    expected_output=template.expected_output,
+                    apply_output=apply_output,
+                )
+            )
+        return stages
 
     def run(self) -> None:
         self._mark_run(status="RUNNING", stage="initializing")
@@ -174,7 +260,7 @@ class TechnicalDesignFlow:
             {"run_uid": self.flow_run.run_uid, "runtime_mode": self.runtime_mode},
         )
 
-        for stage in self.stages:
+        for stage_batch in self._iter_stage_batches():
             self.db.refresh(self.flow_run)
             if self.flow_run.status == "CANCELLED":
                 self._emit_event(
@@ -186,7 +272,10 @@ class TechnicalDesignFlow:
                     },
                 )
                 return
-            self._run_stage(stage)
+            if len(stage_batch) == 1:
+                self._run_stage(stage_batch[0])
+                continue
+            self._run_parallel_stage_group(stage_batch)
 
         self._mark_run(status="COMPLETED", stage="completed", finished_at=utc_now())
         self._emit_event(
@@ -200,19 +289,111 @@ class TechnicalDesignFlow:
         )
 
     def _run_stage(self, stage: StageDefinition) -> None:
-        task_description = self._build_task_description(stage)
+        prepared = self._prepare_stage_execution(stage, self.state.model_copy(deep=True))
+
+        try:
+            execution = self._execute_stage(stage, prepared.resolved_agent, prepared.state_snapshot)
+            self._complete_stage_execution(prepared, execution)
+        except Exception as exc:
+            if self._mark_stage_execution_failed(prepared, exc, mark_run_failed=True):
+                return
+            raise
+
+    def _execute_stage(
+        self,
+        stage: StageDefinition,
+        resolved_agent: ResolvedAgentProfile,
+        state: ProjectFlowState,
+    ) -> StageExecutionResult:
+        if self.runtime_mode == "template":
+            payload = stage.handler(state)
+            return StageExecutionResult(payload=payload, runtime_mode="template")
+
+        crewai_result = self.crewai_runner.run_stage(
+            crew_name=stage.crew_name,
+            agent_profile=resolved_agent,
+            task_description=resolved_agent.prompt_snapshot["task_description"],
+            expected_output=stage.expected_output,
+            output_model=stage.response_model,
+        )
+        structured_output = stage.response_model.model_validate(crewai_result.payload)
+        payload = stage.apply_output(state, structured_output)
+        return StageExecutionResult(
+            payload=payload,
+            runtime_mode="crewai",
+            raw_output=crewai_result.raw_output,
+            prompt_tokens=crewai_result.prompt_tokens,
+            completion_tokens=crewai_result.completion_tokens,
+        )
+
+    def _iter_stage_batches(self) -> List[List[StageDefinition]]:
+        batches: List[List[StageDefinition]] = []
+        index = 0
+        while index < len(self.stages):
+            stage = self.stages[index]
+            if stage.parallel_group:
+                group = [stage]
+                index += 1
+                while index < len(self.stages) and self.stages[index].parallel_group == stage.parallel_group:
+                    group.append(self.stages[index])
+                    index += 1
+                batches.append(group)
+                continue
+            batches.append([stage])
+            index += 1
+        return batches
+
+    def _run_parallel_stage_group(self, stages: List[StageDefinition]) -> None:
+        base_state = self.state.model_copy(deep=True)
+        prepared_stages = [
+            self._prepare_stage_execution(stage, base_state.model_copy(deep=True))
+            for stage in stages
+        ]
+        failures: list[Exception] = []
+
+        with ThreadPoolExecutor(max_workers=len(prepared_stages), thread_name_prefix="se-agent-stage") as executor:
+            future_to_stage = {
+                executor.submit(
+                    self._execute_stage,
+                    prepared.stage,
+                    prepared.resolved_agent,
+                    prepared.state_snapshot,
+                ): prepared
+                for prepared in prepared_stages
+            }
+
+            for future in as_completed(future_to_stage):
+                prepared = future_to_stage[future]
+                try:
+                    execution = future.result()
+                except Exception as exc:
+                    if self._mark_stage_execution_failed(prepared, exc, mark_run_failed=False):
+                        continue
+                    failures.append(exc)
+                    continue
+                self._complete_stage_execution(prepared, execution)
+
+        if failures:
+            raise failures[0]
+
+    def _prepare_stage_execution(
+        self,
+        stage: StageDefinition,
+        state_snapshot: ProjectFlowState,
+    ) -> PreparedStageExecution:
+        task_description = self._build_task_description(stage, state_snapshot)
         resolved_agent = self.agent_factory.resolve(
             agent_code=stage.agent_code,
             task_description=task_description,
-            context=self._build_stage_context(stage),
+            context=self._build_stage_context(stage, state_snapshot),
         )
         prompt_snapshot = dict(resolved_agent.prompt_snapshot)
         prompt_snapshot["expected_output"] = stage.expected_output
         prompt_snapshot["runtime"] = {
             "mode": self.runtime_mode,
-            "model": resolved_agent.model or settings.default_model,
+            "model": self.crewai_runner.resolve_model_name(resolved_agent),
             "temperature": resolved_agent.temperature,
-            "base_url": settings.openai_base_url if self.runtime_mode == "crewai" else "",
+            "base_url": self._runtime_base_url() if self.runtime_mode == "crewai" else "",
         }
 
         task_run = TaskRun(
@@ -222,7 +403,7 @@ class TechnicalDesignFlow:
             agent_code=stage.agent_code,
             crew_name=stage.crew_name,
             input_json={
-                "state": self.state.model_dump(mode="json"),
+                "state": state_snapshot.model_dump(mode="json"),
                 "runtime_mode": self.runtime_mode,
             },
             status="RUNNING",
@@ -243,90 +424,111 @@ class TechnicalDesignFlow:
             },
             task_run.id,
         )
+        return PreparedStageExecution(
+            stage=stage,
+            resolved_agent=resolved_agent,
+            prompt_snapshot=prompt_snapshot,
+            task_run=task_run,
+            state_snapshot=state_snapshot,
+        )
 
-        try:
-            execution = self._execute_stage(stage, resolved_agent)
-            markdown = self._render_markdown(stage.artifact_title, execution.payload)
-            task_run.output_json = execution.payload
-            task_run.output_text = markdown
-            task_run.status = "SUCCEEDED"
-            task_run.finished_at = utc_now()
-            task_run.token_usage_prompt = execution.prompt_tokens or len(prompt_snapshot.get("backstory", "")) // 4
-            task_run.token_usage_completion = execution.completion_tokens or len(execution.raw_output or markdown) // 4
-            self.repository.save_task(task_run)
+    def _complete_stage_execution(
+        self,
+        prepared: PreparedStageExecution,
+        execution: StageExecutionResult,
+    ) -> None:
+        payload = prepared.stage.apply_output(
+            self.state,
+            prepared.stage.response_model.model_validate(execution.payload),
+        )
+        markdown = self._render_markdown(prepared.stage.artifact_title, payload)
+        prepared.task_run.output_json = payload
+        prepared.task_run.output_text = markdown
+        prepared.task_run.status = "SUCCEEDED"
+        prepared.task_run.finished_at = utc_now()
+        prepared.task_run.token_usage_prompt = execution.prompt_tokens or len(prepared.prompt_snapshot.get("backstory", "")) // 4
+        prepared.task_run.token_usage_completion = execution.completion_tokens or len(execution.raw_output or markdown) // 4
+        self.repository.save_task(prepared.task_run)
 
-            artifact = Artifact(
-                artifact_uid=uuid.uuid4().hex,
-                project_id=self.flow_run.project_id,
-                flow_run_id=self.flow_run.id,
-                artifact_type=stage.artifact_type,
-                title=stage.artifact_title,
-                content_markdown=markdown,
-                content_json=execution.payload,
-                source_task_run_id=task_run.id,
-                version_no=1,
-            )
-            artifact = self.repository.create_artifact(artifact)
-            self.state.artifact_ids.append(artifact.id)
-            self._mark_run(state_json=self.state.model_dump(mode="json"))
+        artifact = Artifact(
+            artifact_uid=uuid.uuid4().hex,
+            project_id=self.flow_run.project_id,
+            flow_run_id=self.flow_run.id,
+            artifact_type=prepared.stage.artifact_type,
+            title=prepared.stage.artifact_title,
+            content_markdown=markdown,
+            content_json=payload,
+            source_task_run_id=prepared.task_run.id,
+            version_no=1,
+        )
+        artifact = self.repository.create_artifact(artifact)
+        self.state.artifact_ids.append(artifact.id)
+        self._mark_run(state_json=self.state.model_dump(mode="json"))
+        self._emit_event(
+            "task.completed",
+            prepared.stage.crew_name,
+            {
+                "step_code": prepared.stage.step_code,
+                "artifact_uid": artifact.artifact_uid,
+                "runtime_mode": execution.runtime_mode,
+            },
+            prepared.task_run.id,
+        )
+
+    def _mark_stage_execution_failed(
+        self,
+        prepared: PreparedStageExecution,
+        exc: Exception,
+        *,
+        mark_run_failed: bool,
+    ) -> bool:
+        self.db.refresh(self.flow_run)
+        if self.flow_run.status == "CANCELLED":
+            prepared.task_run.status = "CANCELLED"
+            prepared.task_run.error_message = "Run cancelled while the current stage was still executing."
+            prepared.task_run.finished_at = utc_now()
+            self.repository.save_task(prepared.task_run)
             self._emit_event(
-                "task.completed",
-                stage.crew_name,
+                "task.cancelled",
+                prepared.stage.crew_name,
                 {
-                    "step_code": stage.step_code,
-                    "artifact_uid": artifact.artifact_uid,
-                    "runtime_mode": execution.runtime_mode,
+                    "step_code": prepared.stage.step_code,
+                    "runtime_mode": self.runtime_mode,
                 },
-                task_run.id,
+                prepared.task_run.id,
             )
-        except Exception as exc:
-            task_run.status = "FAILED"
-            task_run.error_message = str(exc)
-            task_run.finished_at = utc_now()
-            self.repository.save_task(task_run)
+            self._emit_event(
+                "flow.cancelled",
+                "TechnicalDesignFlow",
+                {
+                    "current_stage": self.flow_run.current_stage,
+                    "runtime_mode": self.runtime_mode,
+                },
+            )
+            return True
+
+        prepared.task_run.status = "FAILED"
+        prepared.task_run.error_message = str(exc)
+        prepared.task_run.finished_at = utc_now()
+        self.repository.save_task(prepared.task_run)
+        if mark_run_failed:
             self._mark_run(
                 status="FAILED",
-                stage=stage.stage_name,
+                stage=prepared.stage.stage_name,
                 error_message=str(exc),
                 finished_at=utc_now(),
             )
-            self._emit_event(
-                "task.failed",
-                stage.crew_name,
-                {
-                    "step_code": stage.step_code,
-                    "error": str(exc),
-                    "runtime_mode": self.runtime_mode,
-                },
-                task_run.id,
-            )
-            raise
-
-    def _execute_stage(
-        self,
-        stage: StageDefinition,
-        resolved_agent: ResolvedAgentProfile,
-    ) -> StageExecutionResult:
-        if self.runtime_mode == "template":
-            payload = stage.handler(self.state)
-            return StageExecutionResult(payload=payload, runtime_mode="template")
-
-        crewai_result = self.crewai_runner.run_stage(
-            crew_name=stage.crew_name,
-            agent_profile=resolved_agent,
-            task_description=resolved_agent.prompt_snapshot["task_description"],
-            expected_output=stage.expected_output,
-            output_model=stage.response_model,
+        self._emit_event(
+            "task.failed",
+            prepared.stage.crew_name,
+            {
+                "step_code": prepared.stage.step_code,
+                "error": str(exc),
+                "runtime_mode": self.runtime_mode,
+            },
+            prepared.task_run.id,
         )
-        structured_output = stage.response_model.model_validate(crewai_result.payload)
-        payload = stage.apply_output(self.state, structured_output)
-        return StageExecutionResult(
-            payload=payload,
-            runtime_mode="crewai",
-            raw_output=crewai_result.raw_output,
-            prompt_tokens=crewai_result.prompt_tokens,
-            completion_tokens=crewai_result.completion_tokens,
-        )
+        return False
 
     def _resolve_runtime_mode(self) -> str:
         if settings.agent_runtime_mode == "template":
@@ -336,37 +538,87 @@ class TechnicalDesignFlow:
             self._ensure_ai_runtime_ready()
             return "crewai"
 
-        if settings.has_ai_runtime_config:
+        if self.runtime_config or settings.has_ai_runtime_config:
             return "crewai"
         return "template"
 
     def _ensure_ai_runtime_ready(self) -> None:
-        if settings.has_ai_runtime_config:
+        if self.runtime_config or settings.has_ai_runtime_config:
             return
 
         raise RuntimeError(
             "AGENT_RUNTIME_MODE=crewai 但当前没有可用的模型运行配置。"
-            "请设置 OPENAI_API_KEY，或把 OPENAI_BASE_URL 指向一个可用的 OpenAI 兼容端点。"
+            "请在产品中配置用户自己的云端 API，或设置 OPENAI_API_KEY / OPENAI_BASE_URL。"
         )
 
-    def _build_stage_context(self, stage: StageDefinition) -> Dict[str, Any]:
-        snapshot = self.state.model_dump(
-            mode="json",
-            exclude={"artifact_ids"},
-        )
-        snapshot["target_stage"] = stage.step_code
-        snapshot["artifact_title"] = stage.artifact_title
-        return snapshot
+    def _runtime_base_url(self) -> str:
+        if self.runtime_config:
+            return self.runtime_config.base_url
+        return settings.openai_base_url
 
-    def _build_task_description(self, stage: StageDefinition) -> str:
-        context_json = json.dumps(self._build_stage_context(stage), ensure_ascii=False, indent=2)
+    def _build_stage_context(
+        self,
+        stage: StageDefinition,
+        state: Optional[ProjectFlowState] = None,
+    ) -> Dict[str, Any]:
+        active_state = state or self.state
+        context: Dict[str, Any] = {
+            "workflow_code": active_state.workflow_code,
+            "target_stage": stage.step_code,
+            "artifact_title": stage.artifact_title,
+        }
+
+        if stage.step_code == "requirements":
+            context["intake_summary"] = {
+                "brief_excerpt": self._truncate_text(active_state.requirement_text, 480),
+                "feature_clues": self._extract_features(active_state),
+            }
+            return context
+
+        context["requirement_summary"] = self._summarize_requirement_package(active_state)
+
+        if stage.step_code == "architecture":
+            context["task_breakdown_summary"] = self._summarize_task_breakdown(active_state)
+            return context
+
+        if stage.step_code in {"backend_design", "frontend_design", "ai_design"}:
+            context["task_breakdown_summary"] = self._summarize_task_breakdown(active_state)
+            context["architecture_summary"] = self._summarize_architecture_blueprint(active_state)
+            return context
+
+        if stage.step_code == "quality_assurance":
+            context["architecture_summary"] = self._summarize_architecture_blueprint(active_state)
+            context["backend_summary"] = self._summarize_backend_design(active_state)
+            context["frontend_summary"] = self._summarize_frontend_blueprint(active_state)
+            context["ai_summary"] = self._summarize_ai_design(active_state)
+            return context
+
+        if stage.step_code == "consistency_review":
+            context["architecture_summary"] = self._summarize_architecture_blueprint(active_state)
+            context["backend_summary"] = self._summarize_backend_design(active_state)
+            context["frontend_summary"] = self._summarize_frontend_blueprint(active_state)
+            context["ai_summary"] = self._summarize_ai_design(active_state)
+            context["qa_summary"] = self._summarize_quality_plan(active_state)
+            return context
+
+        return context
+
+    def _build_task_description(
+        self,
+        stage: StageDefinition,
+        state: Optional[ProjectFlowState] = None,
+    ) -> str:
+        active_state = state or self.state
+        context_json = json.dumps(self._build_stage_context(stage, active_state), ensure_ascii=False, indent=2)
+        requirement_section_title = "Original project requirement:" if stage.step_code == "requirements" else "Project brief summary:"
+        requirement_section_body = self._format_requirement_brief(active_state, include_full_text=stage.step_code == "requirements")
         lines = [
             f"You are executing the '{stage.step_code}' stage of the SE-Agent Studio technical design workflow.",
             f"Artifact to produce: {stage.artifact_title}.",
             f"Stage objective: {stage.goal}",
             "",
-            "Project requirement:",
-            self.state.requirement_text.strip(),
+            requirement_section_title,
+            requirement_section_body,
             "",
             "Current structured context JSON:",
             context_json,
@@ -421,8 +673,166 @@ class TechnicalDesignFlow:
             )
         )
 
-    def _extract_features(self) -> List[str]:
-        base_text = self.state.requirement_text.replace("。", "\n").replace("；", "\n").replace(";", "\n")
+    def _truncate_text(self, text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[:limit].rstrip() + "..."
+
+    def _compact_list(self, values: Optional[List[Any]], limit: int = 5) -> List[Any]:
+        if not values:
+            return []
+        return list(values[:limit])
+
+    def _format_requirement_brief(self, state: ProjectFlowState, *, include_full_text: bool) -> str:
+        if include_full_text or not state.requirement_spec:
+            return self._truncate_text(state.requirement_text.strip(), 1200 if include_full_text else 420)
+        return json.dumps(self._summarize_requirement_package(state), ensure_ascii=False, indent=2)
+
+    def _summarize_requirement_package(self, state: ProjectFlowState) -> Dict[str, Any]:
+        if not state.requirement_spec:
+            return {
+                "brief_excerpt": self._truncate_text(state.requirement_text.strip(), 320),
+                "feature_clues": self._extract_features(state),
+            }
+
+        requirement_spec = state.requirement_spec
+        summary: Dict[str, Any] = {
+            "project_name": requirement_spec.get("project_name", ""),
+            "problem_statement": self._truncate_text(requirement_spec.get("problem_statement", state.requirement_text), 160),
+            "core_features": self._compact_list(requirement_spec.get("core_features"), limit=4),
+            "constraints": self._compact_list(requirement_spec.get("constraints"), limit=3),
+        }
+        return {key: value for key, value in summary.items() if value}
+
+    def _summarize_task_breakdown(self, state: ProjectFlowState) -> Dict[str, Any]:
+        if not state.task_breakdown:
+            return {}
+
+        milestones = []
+        for milestone in self._compact_list(state.task_breakdown.get("milestones"), limit=4):
+            if not isinstance(milestone, dict):
+                continue
+            milestones.append(
+                {
+                    "title": milestone.get("title", ""),
+                    "owner_role": milestone.get("owner_role", ""),
+                    "deliverable": milestone.get("deliverable", ""),
+                }
+            )
+
+        summary = {
+            "milestones": milestones,
+            "priorities": self._compact_list(state.task_breakdown.get("priorities"), limit=3),
+        }
+        return {key: value for key, value in summary.items() if value}
+
+    def _summarize_architecture_blueprint(self, state: ProjectFlowState) -> Dict[str, Any]:
+        if not state.architecture_blueprint:
+            return {}
+
+        blueprint = state.architecture_blueprint
+        adrs = []
+        for item in self._compact_list(blueprint.get("adrs"), limit=3):
+            if not isinstance(item, dict):
+                continue
+            adrs.append(
+                {
+                    "title": item.get("title", ""),
+                    "decision": self._truncate_text(item.get("decision", ""), 80),
+                }
+            )
+
+        summary = {
+            "architecture_style": blueprint.get("architecture_style", ""),
+            "core_modules": self._compact_list(blueprint.get("core_modules"), limit=5),
+            "deployment_units": self._compact_list(blueprint.get("deployment_units"), limit=4),
+            "key_decisions": self._compact_list(blueprint.get("key_decisions"), limit=3),
+            "adrs": adrs[:2],
+        }
+        return {key: value for key, value in summary.items() if value}
+
+    def _summarize_backend_design(self, state: ProjectFlowState) -> Dict[str, Any]:
+        if not state.backend_design:
+            return {}
+
+        design = state.backend_design
+        entities = []
+        for entity in self._compact_list(design.get("entities"), limit=4):
+            if not isinstance(entity, dict):
+                continue
+            entities.append(
+                {
+                    "name": entity.get("name", ""),
+                    "purpose": self._truncate_text(entity.get("purpose", ""), 80),
+                }
+            )
+
+        api_contracts = []
+        for contract in self._compact_list(design.get("api_contracts"), limit=5):
+            if not isinstance(contract, dict):
+                continue
+            api_contracts.append(f"{contract.get('method', '')} {contract.get('path', '')}".strip())
+
+        summary = {
+            "service_boundary": self._compact_list(design.get("service_boundary"), limit=4),
+            "entities": entities,
+            "api_contracts": api_contracts,
+            "async_strategy": self._compact_list(design.get("async_strategy"), limit=3),
+        }
+        return {key: value for key, value in summary.items() if value}
+
+    def _summarize_frontend_blueprint(self, state: ProjectFlowState) -> Dict[str, Any]:
+        if not state.frontend_blueprint:
+            return {}
+
+        blueprint = state.frontend_blueprint
+        page_tree = []
+        for page in self._compact_list(blueprint.get("page_tree"), limit=4):
+            if not isinstance(page, dict):
+                continue
+            page_tree.append(page.get("page_name", ""))
+
+        summary = {
+            "page_tree": page_tree,
+            "component_map": self._compact_list(blueprint.get("component_map"), limit=5),
+            "api_bindings": self._compact_list(blueprint.get("api_bindings"), limit=4),
+            "realtime_strategy": self._compact_list(blueprint.get("realtime_strategy"), limit=3),
+        }
+        return {key: value for key, value in summary.items() if value}
+
+    def _summarize_ai_design(self, state: ProjectFlowState) -> Dict[str, Any]:
+        if not state.ai_integration_spec:
+            return {}
+
+        spec = state.ai_integration_spec
+        summary = {
+            "provider_strategy": self._compact_list(spec.get("provider_strategy"), limit=3),
+            "output_schemas": self._compact_list(spec.get("output_schemas"), limit=4),
+            "guardrails": self._compact_list(spec.get("guardrails"), limit=4),
+        }
+        return {key: value for key, value in summary.items() if value}
+
+    def _summarize_quality_plan(self, state: ProjectFlowState) -> Dict[str, Any]:
+        if not state.api_test_plan:
+            return {}
+
+        plan = state.api_test_plan
+        scenarios = []
+        for scenario in self._compact_list(plan.get("core_scenarios"), limit=4):
+            if not isinstance(scenario, dict):
+                continue
+            scenarios.append(scenario.get("title", ""))
+
+        summary = {
+            "coverage_focus": self._compact_list(plan.get("coverage_focus"), limit=4),
+            "core_scenarios": scenarios,
+            "acceptance_criteria": self._compact_list(plan.get("acceptance_criteria"), limit=3),
+        }
+        return {key: value for key, value in summary.items() if value}
+
+    def _extract_features(self, state: Optional[ProjectFlowState] = None) -> List[str]:
+        active_state = state or self.state
+        base_text = active_state.requirement_text.replace("。", "\n").replace("；", "\n").replace(";", "\n")
         features = [item.strip(" -\t") for item in base_text.splitlines() if item.strip()]
         unique: List[str] = []
         for item in features:
@@ -472,7 +882,7 @@ class TechnicalDesignFlow:
         return state.review_summary
 
     def _build_requirements(self, state: ProjectFlowState) -> Dict[str, Any]:
-        features = self._extract_features()
+        features = self._extract_features(state)
         spec = RequirementSpec(
             project_name=features[0][:32] if features else "SE-Agent Studio Project",
             problem_statement=state.requirement_text[:240],

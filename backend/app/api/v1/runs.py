@@ -12,7 +12,7 @@ from app.db.models import User
 from app.db.session import SessionLocal, get_db
 from app.repositories.user_repository import UserRepository
 from app.schemas.run import FlowRunResponse, RunCreate, RunEventResponse, RunTaskResponse
-from app.services.run_service import RunService
+from app.services.run_service import RunService, WorkerDispatchError, WorkflowDisabledError, WorkflowNotFoundError
 
 
 router = APIRouter()
@@ -25,7 +25,14 @@ def create_run(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> FlowRunResponse:
-    run = RunService(db).create_run(user=current_user, project_uid=project_uid, payload=payload)
+    try:
+        run = RunService(db).create_run(user=current_user, project_uid=project_uid, payload=payload)
+    except WorkflowNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except WorkflowDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except WorkerDispatchError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return run
@@ -79,7 +86,10 @@ def resume_run(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> FlowRunResponse:
-    result = RunService(db).resume_run(current_user, run_uid)
+    try:
+        result = RunService(db).resume_run(current_user, run_uid)
+    except WorkerDispatchError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     if result is False:

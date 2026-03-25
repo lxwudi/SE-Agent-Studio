@@ -1,7 +1,7 @@
 import datetime as dt
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PromptTemplateVersionItem(BaseModel):
@@ -50,6 +50,16 @@ class WorkflowStepItem(BaseModel):
     sort_order: int
 
 
+class WorkflowStepPatch(BaseModel):
+    step_code: str
+    step_type: str
+    agent_code: Optional[str] = None
+    depends_on: list[str] = Field(default_factory=list)
+    parallel_group: Optional[str] = None
+    output_schema: Optional[str] = None
+    sort_order: int
+
+
 class WorkflowTemplateDetail(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -66,3 +76,5 @@ class WorkflowTemplatePatch(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     enabled: Optional[bool] = None
+    config_json: Optional[dict[str, Any]] = None
+    steps: Optional[list[WorkflowStepPatch]] = None

@@ -53,6 +53,20 @@
             <el-table :data="adminStore.workflows" size="small">
               <el-table-column prop="name" label="名称" min-width="180" />
               <el-table-column prop="workflow_code" label="标识" min-width="160" />
+              <el-table-column label="执行步骤" min-width="280">
+                <template #default="{ row }">
+                  <div class="workflow-step-list">
+                    <el-tag
+                      v-for="step in row.steps"
+                      :key="`${row.workflow_code}-${step.step_code}`"
+                      effect="plain"
+                      class="workflow-step-tag"
+                    >
+                      {{ step.sort_order }} · {{ step.step_code }}
+                    </el-tag>
+                  </div>
+                </template>
+              </el-table-column>
               <el-table-column prop="version" label="版本" width="100" />
               <el-table-column label="启用" width="90">
                 <template #default="{ row }">
@@ -79,3 +93,15 @@ onMounted(() => {
   adminStore.fetchConfig();
 });
 </script>
+
+<style scoped>
+.workflow-step-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workflow-step-tag {
+  margin: 0;
+}
+</style>

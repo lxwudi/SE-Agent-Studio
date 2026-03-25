@@ -10,8 +10,8 @@
       <div class="badge-row">
         <StatusTag :status="runStore.currentRun.status" />
         <el-button @click="refresh">刷新状态</el-button>
-        <el-button type="warning" @click="handleResume">继续执行</el-button>
-        <el-button type="danger" plain @click="handleCancel">取消任务</el-button>
+        <el-button type="warning" :loading="resuming" :disabled="!canResume" @click="handleResume">继续执行</el-button>
+        <el-button type="danger" plain :loading="cancelling" :disabled="!canCancel" @click="handleCancel">取消任务</el-button>
       </div>
     </div>
 
@@ -123,6 +123,7 @@
 </template>
 
 <script setup lang="ts">
+import { ElMessage } from "element-plus";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute } from "vue-router";
 
@@ -132,13 +133,23 @@ import StatusTag from "../components/StatusTag.vue";
 import { getStoredAccessToken } from "../api/http";
 import { useRunStore } from "../stores/run";
 import type { RunEvent } from "../types";
-import { getAgentLabel, getStageLabel } from "../utils/presentation";
+import { getAgentLabel, getStageLabel, getStatusLabel } from "../utils/presentation";
 
 
 const route = useRoute();
 const runStore = useRunStore();
 const eventSource = ref<EventSource | null>(null);
+const cancelling = ref(false);
+const resuming = ref(false);
 const runUid = computed(() => String(route.params.runUid));
+const canCancel = computed(() => {
+  const status = runStore.currentRun?.status ?? "";
+  return !["COMPLETED", "FAILED", "CANCELLED"].includes(status);
+});
+const canResume = computed(() => {
+  const status = runStore.currentRun?.status ?? "";
+  return ["FAILED", "CANCELLED"].includes(status);
+});
 
 onMounted(async () => {
   await refresh();
@@ -154,11 +165,49 @@ async function refresh() {
 }
 
 async function handleCancel() {
-  await runStore.requestCancel(runUid.value);
+  if (!runStore.currentRun) {
+    return;
+  }
+  if (!canCancel.value) {
+    ElMessage.info(`当前任务状态为“${getStatusLabel(runStore.currentRun.status)}”，不能再取消。`);
+    return;
+  }
+
+  cancelling.value = true;
+  try {
+    const updated = await runStore.requestCancel(runUid.value);
+    await refresh();
+    if (updated.status === "CANCELLED") {
+      ElMessage.success("已提交取消。当前阶段如果正在调用模型，会在收尾后停止后续阶段。");
+      return;
+    }
+    ElMessage.info(`当前任务状态为“${getStatusLabel(updated.status)}”，不能再取消。`);
+  } catch {
+    ElMessage.error("取消失败，请稍后重试。");
+  } finally {
+    cancelling.value = false;
+  }
 }
 
 async function handleResume() {
-  await runStore.requestResume(runUid.value);
+  if (!runStore.currentRun) {
+    return;
+  }
+  if (!canResume.value) {
+    ElMessage.info(`当前任务状态为“${getStatusLabel(runStore.currentRun.status)}”，不能继续执行。`);
+    return;
+  }
+
+  resuming.value = true;
+  try {
+    await runStore.requestResume(runUid.value);
+    await refresh();
+    ElMessage.success("已重新发起执行。");
+  } catch {
+    ElMessage.error("继续执行失败，请稍后重试。");
+  } finally {
+    resuming.value = false;
+  }
 }
 
 function connectStream() {
@@ -175,7 +224,11 @@ function connectStream() {
   eventSource.value.addEventListener("run.event", (event) => {
     const parsed = JSON.parse((event as MessageEvent<string>).data) as RunEvent;
     runStore.appendEvent(parsed);
-    if (parsed.event_type.includes("completed") || parsed.event_type.includes("failed")) {
+    if (
+      parsed.event_type.includes("completed")
+      || parsed.event_type.includes("failed")
+      || parsed.event_type.includes("cancel")
+    ) {
       refresh();
     }
   });

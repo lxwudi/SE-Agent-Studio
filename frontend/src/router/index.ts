@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from "vue-router";
 
 import AdminConfigView from "../views/AdminConfigView.vue";
 import ArtifactCenterView from "../views/ArtifactCenterView.vue";
+import LLMConfigView from "../views/LLMConfigView.vue";
 import LoginView from "../views/LoginView.vue";
 import ProjectDetailView from "../views/ProjectDetailView.vue";
 import ProjectListView from "../views/ProjectListView.vue";
@@ -18,6 +19,7 @@ const router = createRouter({
     { path: "/projects/:projectUid", component: ProjectDetailView, meta: { requiresAuth: true } },
     { path: "/projects/:projectUid/artifacts", component: ArtifactCenterView, meta: { requiresAuth: true } },
     { path: "/runs/:runUid", component: RunMonitorView, meta: { requiresAuth: true } },
+    { path: "/settings/llm", component: LLMConfigView, meta: { requiresAuth: true } },
     { path: "/admin", component: AdminConfigView, meta: { requiresAuth: true } },
   ],
 });

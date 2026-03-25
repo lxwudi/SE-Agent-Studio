@@ -15,8 +15,9 @@ async def lifespan(_: FastAPI):
     configure_logging()
     if settings.auto_create_schema:
         create_all_tables()
-    with session_scope() as db:
-        bootstrap_catalog(db)
+    if settings.bootstrap_data_on_startup:
+        with session_scope() as db:
+            bootstrap_catalog(db)
     yield
 
 

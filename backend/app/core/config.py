@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,12 +15,20 @@ class Settings(BaseSettings):
     openai_base_url: str = Field(default="https://api.openai.com/v1", alias="OPENAI_BASE_URL")
     default_model: str = Field(default="gpt-4.1-mini", alias="DEFAULT_MODEL")
     jwt_secret: str = Field(default="change-me", alias="JWT_SECRET")
+    secret_encryption_key: str = Field(default="", alias="SECRET_ENCRYPTION_KEY")
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
     access_token_expire_minutes: int = Field(default=720, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
-    execution_mode: str = Field(default="local", alias="EXECUTION_MODE")
+    execution_mode: str = Field(default="celery", alias="EXECUTION_MODE")
     agent_runtime_mode: str = Field(default="auto", alias="AGENT_RUNTIME_MODE")
     llm_timeout_seconds: int = Field(default=120, alias="LLM_TIMEOUT_SECONDS")
-    auto_create_schema: bool = Field(default=True, alias="AUTO_CREATE_SCHEMA")
+    celery_task_queue: str = Field(default="flow_runs", alias="CELERY_TASK_QUEUE")
+    celery_task_always_eager: bool = Field(default=False, alias="CELERY_TASK_ALWAYS_EAGER")
+    celery_task_eager_propagates: bool = Field(default=True, alias="CELERY_TASK_EAGER_PROPAGATES")
+    celery_task_soft_time_limit_seconds: int = Field(default=900, alias="CELERY_TASK_SOFT_TIME_LIMIT_SECONDS")
+    celery_task_time_limit_seconds: int = Field(default=960, alias="CELERY_TASK_TIME_LIMIT_SECONDS")
+    celery_publish_retry_attempts: int = Field(default=3, alias="CELERY_PUBLISH_RETRY_ATTEMPTS")
+    auto_create_schema: bool = Field(default=False, alias="AUTO_CREATE_SCHEMA")
+    bootstrap_data_on_startup: bool = Field(default=False, alias="BOOTSTRAP_DATA_ON_STARTUP")
     cors_origins: List[str] = Field(default_factory=lambda: ["http://localhost:5173"], alias="CORS_ORIGINS")
     default_owner_email: str = Field(default="demo@se-agent.studio", alias="DEFAULT_OWNER_EMAIL")
     default_owner_name: str = Field(default="Demo User", alias="DEFAULT_OWNER_NAME")
@@ -42,6 +50,28 @@ class Settings(BaseSettings):
         if normalized not in {"auto", "template", "crewai"}:
             raise ValueError("AGENT_RUNTIME_MODE must be one of: auto, template, crewai")
         return normalized
+
+    @field_validator("execution_mode")
+    @classmethod
+    def validate_execution_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized == "local":
+            return "thread"
+        if normalized not in {"thread", "celery"}:
+            raise ValueError("EXECUTION_MODE must be one of: celery, thread")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_celery_limits(self) -> "Settings":
+        if self.celery_task_soft_time_limit_seconds <= 0:
+            raise ValueError("CELERY_TASK_SOFT_TIME_LIMIT_SECONDS must be positive")
+        if self.celery_task_time_limit_seconds <= self.celery_task_soft_time_limit_seconds:
+            raise ValueError(
+                "CELERY_TASK_TIME_LIMIT_SECONDS must be greater than CELERY_TASK_SOFT_TIME_LIMIT_SECONDS"
+            )
+        if self.celery_publish_retry_attempts < 0:
+            raise ValueError("CELERY_PUBLISH_RETRY_ATTEMPTS must be zero or positive")
+        return self
 
     @property
     def has_ai_runtime_config(self) -> bool:

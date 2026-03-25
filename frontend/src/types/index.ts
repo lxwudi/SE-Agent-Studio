@@ -74,6 +74,16 @@ export interface AgentProfile {
   meta_json: Record<string, unknown>;
 }
 
+export interface WorkflowStep {
+  step_code: string;
+  step_type: string;
+  agent_code?: string | null;
+  depends_on: string[];
+  parallel_group?: string | null;
+  output_schema?: string | null;
+  sort_order: number;
+}
+
 export interface WorkflowTemplate {
   workflow_code: string;
   name: string;
@@ -81,6 +91,7 @@ export interface WorkflowTemplate {
   version: number;
   enabled: boolean;
   config_json: Record<string, unknown>;
+  steps: WorkflowStep[];
 }
 
 export interface AuthUser {
@@ -97,4 +108,15 @@ export interface LoginResponse {
   token_type: string;
   expires_in: number;
   user: AuthUser;
+}
+
+export interface UserLLMConfig {
+  provider_name: string;
+  base_url: string;
+  default_model: string;
+  enabled: boolean;
+  has_api_key: boolean;
+  masked_api_key: string;
+  is_ready: boolean;
+  updated_at?: string | null;
 }
