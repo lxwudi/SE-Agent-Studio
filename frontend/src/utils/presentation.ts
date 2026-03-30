@@ -8,6 +8,12 @@ const stageLabels: Record<string, string> = {
   ai_design: "AI 集成",
   quality_assurance: "测试方案",
   consistency_review: "综合复核",
+  delivery_requirements: "交付需求",
+  solution_design: "实施方案",
+  backend_delivery: "后端交付",
+  frontend_delivery: "前端交付",
+  integration: "集成交付",
+  handoff: "交付移交",
   completed: "已完成",
 };
 
@@ -19,6 +25,12 @@ const artifactTypeLabels: Record<string, string> = {
   ai_integration_spec: "AI 集成方案",
   api_test_plan: "测试计划",
   review_summary: "复核结论",
+  delivery_requirements: "交付需求",
+  solution_delivery_plan: "实施方案",
+  backend_code_bundle: "后端代码包",
+  frontend_code_bundle: "前端代码包",
+  integration_bundle: "集成交付说明",
+  delivery_handoff: "交付总结",
 };
 
 const agentLabels: Record<string, string> = {
@@ -40,6 +52,7 @@ const eventSourceLabels: Record<string, string> = {
   AIPlatformDesignCrew: "AI 集成设计",
   QualityAssuranceCrew: "测试设计",
   ConsistencyReviewCrew: "结果复核",
+  DeliveryFlow: "代码交付流",
 };
 
 const eventTypeLabels: Record<string, string> = {
@@ -51,6 +64,10 @@ const eventTypeLabels: Record<string, string> = {
   "task.completed": "阶段完成",
   "task.cancelled": "阶段已取消",
   "task.failed": "阶段失败",
+  "delivery.stage_fallback": "阶段已回退到模板",
+  "delivery.verification.completed": "自动验证完成",
+  "delivery.repair.started": "自动修复开始",
+  "delivery.repair.completed": "自动修复完成",
 };
 
 const statusLabels: Record<string, string> = {
@@ -80,7 +97,13 @@ export function getStageDescription(stage: string) {
     ai_design: "确定模型调用方式、提示策略和安全边界",
     quality_assurance: "补齐测试策略、场景覆盖和验收要点",
     consistency_review: "统一复核各部分方案是否一致",
-    completed: "全部设计文档已生成并归档",
+    delivery_requirements: "把原始需求压缩成可交付的 starter 范围",
+    solution_design: "确定代码结构、启动命令和交付路径",
+    backend_delivery: "生成后端可运行代码与测试文件",
+    frontend_delivery: "生成前端可运行页面与调用逻辑",
+    integration: "把前后端代码写入真实工作区，执行自动验证并在失败时回修",
+    handoff: "总结交付结果、验证状态和后续建议",
+    completed: "全部交付产物已生成并归档",
   };
   return descriptions[stage] ?? "等待该阶段开始执行";
 }

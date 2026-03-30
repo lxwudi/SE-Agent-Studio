@@ -1,5 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from io import BytesIO
 
 from app.api.deps import get_current_user
 from app.db.models import User
@@ -51,3 +53,33 @@ def update_project(
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
+
+
+@router.delete("/{project_uid}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project(
+    project_uid: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    deleted = ProjectService(db).delete_project(current_user, project_uid)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{project_uid}/package")
+def download_project_package(
+    project_uid: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    package = ProjectService(db).build_delivery_package(current_user, project_uid)
+    if not package:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No downloadable delivery package found for this project.",
+        )
+
+    filename, content = package
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(BytesIO(content), media_type="application/zip", headers=headers)

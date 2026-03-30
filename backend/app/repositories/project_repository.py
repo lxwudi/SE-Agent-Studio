@@ -29,3 +29,7 @@ class ProjectRepository:
         self.db.commit()
         self.db.refresh(project)
         return project
+
+    def delete(self, project: Project) -> None:
+        self.db.delete(project)
+        self.db.commit()

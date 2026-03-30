@@ -19,16 +19,22 @@
           <div class="section-heading">
             <div>
               <h3 class="card-title">角色模板</h3>
-              <p class="helper-text">展示当前已接入平台的角色配置和默认模型。</p>
+              <p class="helper-text">展示当前已接入平台的角色配置，以及每个角色自己的默认模型回退值。</p>
             </div>
             <span class="chip">角色列表</span>
+          </div>
+
+          <div class="mini-card" style="margin-bottom: 18px">
+            <h4>这里的“角色默认模型”是什么</h4>
+            <p>它是平台给这个角色预设的模型名，主要用于兜底。</p>
+            <p>如果当前登录账号在“模型配置”里填了自己的默认模型，或者给某个角色单独指定了模型，运行时都会优先用账号配置，不会优先用这里这一列。</p>
           </div>
 
           <div class="table-shell">
             <el-table :data="adminStore.agents" size="small">
               <el-table-column prop="display_name" label="角色" min-width="150" />
               <el-table-column prop="agent_code" label="标识" min-width="160" />
-              <el-table-column prop="default_model" label="模型" min-width="120" />
+              <el-table-column prop="default_model" label="角色默认模型（回退）" min-width="180" />
               <el-table-column label="启用" width="90">
                 <template #default="{ row }">
                   <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? "是" : "否" }}</el-tag>
@@ -44,7 +50,7 @@
           <div class="section-heading">
             <div>
               <h3 class="card-title">工作流模板</h3>
-              <p class="helper-text">展示当前可用的标准流程，便于直接发起设计任务。</p>
+              <p class="helper-text">展示当前可用的标准流程，便于直接发起交付任务或查看历史工作流。</p>
             </div>
             <span class="chip">流程列表</span>
           </div>

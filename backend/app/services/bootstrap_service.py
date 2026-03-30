@@ -67,21 +67,13 @@ def bootstrap_catalog(db: Session) -> None:
                 )
             )
 
-    workflow_stmt = select(WorkflowTemplate).where(WorkflowTemplate.workflow_code == "technical_design_v1")
-    workflow = db.scalar(workflow_stmt)
-    if not workflow:
-        workflow = WorkflowTemplate(
-            workflow_code="technical_design_v1",
-            name="技术设计固定流程 V1",
-            description="需求结构化 -> 架构 -> 后端/前端/AI -> 测试 -> 一致性评审",
-            version=1,
-            enabled=True,
-            config_json={"supports_review": False, "supports_parallel_hint": True},
-        )
-        db.add(workflow)
-        db.flush()
-
-        steps = [
+    ensure_workflow(
+        db,
+        workflow_code="technical_design_v1",
+        name="技术设计固定流程 V1",
+        description="需求结构化 -> 架构 -> 后端/前端/AI -> 测试 -> 一致性评审",
+        config_json={"supports_review": False, "supports_parallel_hint": True},
+        steps=[
             ("requirements", "crew", "product_manager", [], None, "RequirementSpec", 10),
             ("architecture", "crew", "software_architect", ["requirements"], None, "ArchitectureBlueprint", 20),
             ("backend_design", "crew", "backend_architect", ["architecture"], "design", "BackendDesign", 30),
@@ -89,22 +81,65 @@ def bootstrap_catalog(db: Session) -> None:
             ("ai_design", "crew", "ai_engineer", ["architecture"], "design", "AIIntegrationSpec", 50),
             ("quality_assurance", "crew", "api_tester", ["backend_design", "frontend_design", "ai_design"], None, "ApiTestPlan", 60),
             ("consistency_review", "crew", "software_architect", ["quality_assurance"], None, "ConsistencyReviewSummary", 70),
-        ]
-        for step_code, step_type, agent_code, depends_on, parallel_group, output_schema, sort_order in steps:
-            db.add(
-                WorkflowStep(
-                    workflow_template_id=workflow.id,
-                    step_code=step_code,
-                    step_type=step_type,
-                    agent_code=agent_code,
-                    depends_on=depends_on,
-                    parallel_group=parallel_group,
-                    output_schema=output_schema,
-                    sort_order=sort_order,
-                )
-            )
+        ],
+    )
+    ensure_workflow(
+        db,
+        workflow_code="delivery_v1",
+        name="代码交付固定流程 V1",
+        description="交付需求 -> 实施方案 -> 后端/前端代码包 -> 集成 -> 交付移交",
+        config_json={"supports_review": False, "supports_parallel_hint": True, "delivery_mode": "starter"},
+        steps=[
+            ("delivery_requirements", "crew", "product_manager", [], None, "DeliveryRequirementSpec", 10),
+            ("solution_design", "crew", "software_architect", ["delivery_requirements"], None, "SolutionDeliveryPlan", 20),
+            ("backend_delivery", "crew", "backend_architect", ["solution_design"], "delivery", "CodeBundle", 30),
+            ("frontend_delivery", "crew", "frontend_developer", ["solution_design"], "delivery", "CodeBundle", 40),
+            ("integration", "crew", "api_tester", ["backend_delivery", "frontend_delivery"], None, "IntegrationBundle", 50),
+            ("handoff", "crew", "software_architect", ["integration"], None, "DeliveryHandoff", 60),
+        ],
+    )
 
     db.commit()
+
+
+def ensure_workflow(
+    db: Session,
+    *,
+    workflow_code: str,
+    name: str,
+    description: str,
+    config_json: dict,
+    steps: list[tuple[str, str, str, list[str], str | None, str, int]],
+) -> None:
+    workflow_stmt = select(WorkflowTemplate).where(WorkflowTemplate.workflow_code == workflow_code)
+    workflow = db.scalar(workflow_stmt)
+    if workflow:
+        return
+
+    workflow = WorkflowTemplate(
+        workflow_code=workflow_code,
+        name=name,
+        description=description,
+        version=1,
+        enabled=True,
+        config_json=config_json,
+    )
+    db.add(workflow)
+    db.flush()
+
+    for step_code, step_type, agent_code, depends_on, parallel_group, output_schema, sort_order in steps:
+        db.add(
+            WorkflowStep(
+                workflow_template_id=workflow.id,
+                step_code=step_code,
+                step_type=step_type,
+                agent_code=agent_code,
+                depends_on=depends_on,
+                parallel_group=parallel_group,
+                output_schema=output_schema,
+                sort_order=sort_order,
+            )
+        )
 
 
 class BootstrapService:

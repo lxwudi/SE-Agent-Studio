@@ -3,9 +3,9 @@
     <section class="hero-banner">
       <div class="hero-panel">
         <p class="eyebrow">项目入口</p>
-        <h2>把项目需求整理成清晰可读的设计成果</h2>
+        <h2>把项目需求推进成可运行的交付成果</h2>
         <p class="hero-lead">
-          在同一个工作台里录入项目背景、跟进任务进展，并集中查看需求、架构、前后端设计与测试方案。
+          在同一个工作台里录入项目背景、跟进任务进展，并集中查看需求、代码产物、自动验证和交付总结。
         </p>
 
         <div class="hero-badges">
@@ -19,13 +19,13 @@
         <div class="glass-panel metric-card metric-card--accent">
           <small>项目总数</small>
           <strong>{{ projectStore.projects.length }}</strong>
-          <p>每个项目都保留自己的需求背景、任务记录和设计文档。</p>
+          <p>每个项目都保留自己的需求背景、任务记录、代码产物和验证结果。</p>
         </div>
 
         <div class="glass-panel metric-card">
           <small>标准流程</small>
-          <strong>技术设计</strong>
-          <p>系统会按统一顺序生成需求、架构、前后端与测试方案。</p>
+          <strong>代码交付</strong>
+          <p>系统会按统一顺序生成方案、前后端代码、自动验证与交付总结。</p>
         </div>
 
         <div class="glass-panel metric-card">
@@ -37,7 +37,7 @@
         <div class="glass-panel metric-card">
           <small>成果管理</small>
           <strong>集中归档</strong>
-          <p>每次任务生成的设计文档都会保留下来，便于查看和复用。</p>
+          <p>每次任务生成的代码包和验证结果都会保留下来，便于查看和复用。</p>
         </div>
       </div>
     </section>
@@ -45,7 +45,7 @@
     <div class="page-header">
       <div>
         <h2>项目空间</h2>
-        <p>新建项目后，可以继续完善需求，并发起新的设计任务。</p>
+        <p>新建项目后，可以继续完善需求，并发起新的交付任务。</p>
       </div>
       <el-button type="primary" @click="dialogVisible = true">新建项目</el-button>
     </div>
@@ -60,11 +60,11 @@
       </div>
 
       <div v-if="projectStore.projects.length" class="project-grid">
-        <RouterLink
+        <article
           v-for="project in projectStore.projects"
           :key="project.uid"
-          :to="`/projects/${project.uid}`"
-          class="project-card"
+          class="project-card project-card--interactive"
+          @click="goProject(project.uid)"
         >
           <h3>{{ project.name }}</h3>
           <p>{{ project.description || "当前还没有填写项目描述，可以进详情页继续完善。" }}</p>
@@ -72,12 +72,23 @@
             <span>UID · {{ project.uid.slice(0, 10) }}</span>
             <span>更新于 {{ formatDate(project.updated_at) }}</span>
           </div>
-        </RouterLink>
+          <div class="project-card__actions">
+            <el-button @click.stop="goProject(project.uid)">进入项目</el-button>
+            <el-button
+              type="danger"
+              plain
+              :loading="deletingUid === project.uid"
+              @click.stop="handleDelete(project.uid, project.name)"
+            >
+              删除项目
+            </el-button>
+          </div>
+        </article>
       </div>
 
       <div v-else class="mini-card empty-state">
         <h4>还没有项目</h4>
-        <p>先创建第一个项目，把需求整理进去，再开始生成设计成果。</p>
+        <p>先创建第一个项目，把需求整理进去，再开始生成可运行交付成果。</p>
       </div>
     </div>
 
@@ -103,8 +114,8 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
-import { RouterLink, useRouter } from "vue-router";
+import { ElMessage, ElMessageBox } from "element-plus";
+import { useRouter } from "vue-router";
 
 import { useProjectStore } from "../stores/project";
 
@@ -112,6 +123,7 @@ import { useProjectStore } from "../stores/project";
 const router = useRouter();
 const projectStore = useProjectStore();
 const dialogVisible = ref(false);
+const deletingUid = ref("");
 const form = reactive({
   name: "",
   description: "",
@@ -131,6 +143,36 @@ async function handleCreate() {
   dialogVisible.value = false;
   Object.assign(form, { name: "", description: "", latest_requirement: "" });
   router.push(`/projects/${project.uid}`);
+}
+
+function goProject(projectUid: string) {
+  router.push(`/projects/${projectUid}`);
+}
+
+async function handleDelete(projectUid: string, projectName: string) {
+  try {
+    await ElMessageBox.confirm(
+      `删除后，这个项目下的运行记录和产物也会一起移除。确认删除“${projectName}”吗？`,
+      "删除项目",
+      {
+        type: "warning",
+        confirmButtonText: "确认删除",
+        cancelButtonText: "取消",
+      },
+    );
+  } catch {
+    return;
+  }
+
+  deletingUid.value = projectUid;
+  try {
+    await projectStore.remove(projectUid);
+    ElMessage.success("项目已删除。");
+  } catch {
+    ElMessage.error("删除项目失败，请稍后重试。");
+  } finally {
+    deletingUid.value = "";
+  }
 }
 
 function formatDate(value: string) {

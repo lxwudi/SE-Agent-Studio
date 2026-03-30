@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 
-import { createProject, getProject, listProjects } from "../api/projects";
+import { createProject, deleteProject, getProject, listProjects } from "../api/projects";
 import type { Project, ProjectDetail } from "../types";
 
 
@@ -36,6 +36,14 @@ export const useProjectStore = defineStore("projectStore", () => {
     return data;
   }
 
+  async function remove(projectUid: string) {
+    await deleteProject(projectUid);
+    projects.value = projects.value.filter((item) => item.uid !== projectUid);
+    if (currentProject.value?.uid === projectUid) {
+      currentProject.value = null;
+    }
+  }
+
   return {
     projects,
     currentProject,
@@ -43,6 +51,6 @@ export const useProjectStore = defineStore("projectStore", () => {
     fetchProjects,
     fetchProject,
     create,
+    remove,
   };
 });
-

@@ -18,5 +18,5 @@ logger = get_task_logger(__name__)
     reject_on_worker_lost=True,
 )
 def run_technical_design_flow(self, run_uid: str) -> None:  # type: ignore[no-untyped-def]
-    logger.info("dispatching technical design flow", extra={"run_uid": run_uid, "task_id": self.request.id})
+    logger.info("dispatching workflow run", extra={"run_uid": run_uid, "task_id": self.request.id})
     execute_run_in_session(run_uid, raise_on_failure=True)

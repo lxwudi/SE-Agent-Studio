@@ -17,6 +17,12 @@ class ProjectFlowState(BaseModel):
     ai_integration_spec: Optional[Dict[str, Any]] = None
     api_test_plan: Optional[Dict[str, Any]] = None
     review_summary: Optional[Dict[str, Any]] = None
+    delivery_requirements: Optional[Dict[str, Any]] = None
+    delivery_plan: Optional[Dict[str, Any]] = None
+    backend_code_bundle: Optional[Dict[str, Any]] = None
+    frontend_code_bundle: Optional[Dict[str, Any]] = None
+    integration_bundle: Optional[Dict[str, Any]] = None
+    delivery_handoff: Optional[Dict[str, Any]] = None
     clarification_needed: bool = False
     review_required: bool = False
     current_stage: str = "created"

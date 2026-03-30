@@ -5,6 +5,9 @@ import { cancelRun, createRun, getRun, listRunEvents, listRunTasks, resumeRun } 
 import type { FlowRun, RunEvent, TaskRun } from "../types";
 
 
+const DEFAULT_WORKFLOW_CODE = "delivery_v1";
+
+
 export const useRunStore = defineStore("runStore", () => {
   const currentRun = ref<FlowRun | null>(null);
   const tasks = ref<TaskRun[]>([]);
@@ -12,7 +15,10 @@ export const useRunStore = defineStore("runStore", () => {
   const loading = ref(false);
 
   async function create(projectUid: string, requirementText: string) {
-    const { data } = await createRun(projectUid, { requirement_text: requirementText });
+    const { data } = await createRun(projectUid, {
+      requirement_text: requirementText,
+      workflow_code: DEFAULT_WORKFLOW_CODE,
+    });
     currentRun.value = data;
     return data;
   }

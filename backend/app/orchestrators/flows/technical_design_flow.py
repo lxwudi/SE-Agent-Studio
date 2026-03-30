@@ -181,6 +181,9 @@ STAGE_TEMPLATE_REGISTRY: dict[str, StageTemplate] = {
 
 
 class TechnicalDesignFlow:
+    stage_template_registry = STAGE_TEMPLATE_REGISTRY
+    flow_event_source = "TechnicalDesignFlow"
+
     def __init__(self, db: Session, flow_run: FlowRun):
         self.db = db
         self.flow_run = flow_run
@@ -222,7 +225,7 @@ class TechnicalDesignFlow:
     def _build_stages(self, workflow: WorkflowTemplate) -> List[StageDefinition]:
         stages: List[StageDefinition] = []
         for step in sorted(workflow.steps, key=lambda item: item.sort_order):
-            template = STAGE_TEMPLATE_REGISTRY.get(step.step_code)
+            template = self.stage_template_registry.get(step.step_code)
             if template is None:
                 raise ValueError(
                     f"Workflow '{workflow.workflow_code}' 包含当前版本不支持的步骤 '{step.step_code}'。"
@@ -256,7 +259,7 @@ class TechnicalDesignFlow:
         self._mark_run(status="RUNNING", stage="initializing")
         self._emit_event(
             "flow.started",
-            "TechnicalDesignFlow",
+            self.flow_event_source,
             {"run_uid": self.flow_run.run_uid, "runtime_mode": self.runtime_mode},
         )
 
@@ -265,7 +268,7 @@ class TechnicalDesignFlow:
             if self.flow_run.status == "CANCELLED":
                 self._emit_event(
                     "flow.cancelled",
-                    "TechnicalDesignFlow",
+                    self.flow_event_source,
                     {
                         "current_stage": self.flow_run.current_stage,
                         "runtime_mode": self.runtime_mode,
@@ -280,7 +283,7 @@ class TechnicalDesignFlow:
         self._mark_run(status="COMPLETED", stage="completed", finished_at=utc_now())
         self._emit_event(
             "flow.completed",
-            "TechnicalDesignFlow",
+            self.flow_event_source,
             {
                 "artifact_ids": self.state.artifact_ids,
                 "current_stage": self.state.current_stage,
@@ -366,12 +369,11 @@ class TechnicalDesignFlow:
                 prepared = future_to_stage[future]
                 try:
                     execution = future.result()
+                    self._complete_stage_execution(prepared, execution)
                 except Exception as exc:
                     if self._mark_stage_execution_failed(prepared, exc, mark_run_failed=False):
                         continue
                     failures.append(exc)
-                    continue
-                self._complete_stage_execution(prepared, execution)
 
         if failures:
             raise failures[0]
@@ -387,13 +389,15 @@ class TechnicalDesignFlow:
             task_description=task_description,
             context=self._build_stage_context(stage, state_snapshot),
         )
+        runtime_settings = self.crewai_runner.resolve_runtime_settings(resolved_agent)
         prompt_snapshot = dict(resolved_agent.prompt_snapshot)
         prompt_snapshot["expected_output"] = stage.expected_output
         prompt_snapshot["runtime"] = {
             "mode": self.runtime_mode,
-            "model": self.crewai_runner.resolve_model_name(resolved_agent),
+            "model": runtime_settings.model,
             "temperature": resolved_agent.temperature,
-            "base_url": self._runtime_base_url() if self.runtime_mode == "crewai" else "",
+            "base_url": runtime_settings.base_url if self.runtime_mode == "crewai" else "",
+            "provider_name": runtime_settings.provider_name if self.runtime_mode == "crewai" else "",
         }
 
         task_run = TaskRun(
@@ -437,11 +441,23 @@ class TechnicalDesignFlow:
         prepared: PreparedStageExecution,
         execution: StageExecutionResult,
     ) -> None:
+        next_state = self.state.model_copy(deep=True)
         payload = prepared.stage.apply_output(
-            self.state,
+            next_state,
             prepared.stage.response_model.model_validate(execution.payload),
         )
-        markdown = self._render_markdown(prepared.stage.artifact_title, payload)
+        quality_notes = self._validate_stage_payload_quality(
+            prepared.stage,
+            payload,
+            runtime_mode=execution.runtime_mode,
+        )
+        markdown = self._render_markdown(
+            prepared.stage,
+            payload,
+            runtime_mode=execution.runtime_mode,
+            quality_notes=quality_notes,
+        )
+        self.state = next_state
         prepared.task_run.output_json = payload
         prepared.task_run.output_text = markdown
         prepared.task_run.status = "SUCCEEDED"
@@ -499,7 +515,7 @@ class TechnicalDesignFlow:
             )
             self._emit_event(
                 "flow.cancelled",
-                "TechnicalDesignFlow",
+                self.flow_event_source,
                 {
                     "current_stage": self.flow_run.current_stage,
                     "runtime_mode": self.runtime_mode,
@@ -540,7 +556,12 @@ class TechnicalDesignFlow:
 
         if self.runtime_config or settings.has_ai_runtime_config:
             return "crewai"
-        return "template"
+
+        raise RuntimeError(
+            "AGENT_RUNTIME_MODE=auto 且当前未检测到可用模型配置。"
+            "为避免静默回退并生成 template 草稿产物，本次运行已被阻止。"
+            "请先配置用户 LLM / OPENAI_API_KEY，或显式设置 AGENT_RUNTIME_MODE=template 仅作为草稿模式运行。"
+        )
 
     def _ensure_ai_runtime_ready(self) -> None:
         if self.runtime_config or settings.has_ai_runtime_config:
@@ -882,7 +903,16 @@ class TechnicalDesignFlow:
         return state.review_summary
 
     def _build_requirements(self, state: ProjectFlowState) -> Dict[str, Any]:
-        features = self._extract_features(state)
+        features = list(
+            dict.fromkeys(
+                [
+                    *self._extract_features(state),
+                    "将项目需求整理为结构化规格",
+                    "支持创建运行并持续追踪阶段状态",
+                    "支持统一查看和管理阶段产物",
+                ]
+            )
+        )[:6]
         spec = RequirementSpec(
             project_name=features[0][:32] if features else "SE-Agent Studio Project",
             problem_statement=state.requirement_text[:240],
@@ -1023,24 +1053,518 @@ class TechnicalDesignFlow:
         state.review_summary = summary.model_dump(mode="json")
         return state.review_summary
 
-    def _render_markdown(self, title: str, payload: Dict[str, Any]) -> str:
-        lines = [f"# {title}", ""]
+    def _validate_stage_payload_quality(
+        self,
+        stage: StageDefinition,
+        payload: Dict[str, Any],
+        *,
+        runtime_mode: str,
+    ) -> List[str]:
+        text_fragments = self._collect_text_fragments(payload)
+        if not text_fragments:
+            raise ValueError(f"阶段 {stage.step_code} 未生成可读内容，质量门禁拒绝落库。")
+
+        substring_placeholder_markers = (
+            "tbd",
+            "todo",
+            "placeholder",
+            "same as above",
+            "lorem ipsum",
+            "待补充",
+            "暂无",
+            "n/a",
+        )
+        exact_placeholder_markers = {"同上", "略"}
+        lowered_fragments = [item.lower() for item in text_fragments]
+        normalized_fragments = {item.strip().lower() for item in text_fragments if item.strip()}
+        matched_markers = sorted(
+            {
+                marker
+                for marker in substring_placeholder_markers
+                if any(marker in fragment for fragment in lowered_fragments)
+            }
+            | {
+                marker
+                for marker in exact_placeholder_markers
+                if marker in normalized_fragments
+            }
+        )
+        if matched_markers:
+            raise ValueError(
+                f"阶段 {stage.step_code} 未通过质量门禁：检测到占位式表述 {', '.join(matched_markers)}。"
+            )
+
+        combined_length = sum(len(item) for item in text_fragments)
+        min_text_length = {
+            "requirements": 120,
+            "architecture": 120,
+            "backend_design": 100,
+            "frontend_design": 100,
+            "ai_design": 80,
+            "quality_assurance": 80,
+            "consistency_review": 60,
+        }.get(stage.step_code, 80)
+        if combined_length < min_text_length:
+            raise ValueError(
+                f"阶段 {stage.step_code} 未通过质量门禁：文本信息量不足，当前仅 {combined_length} 个字符。"
+            )
+
+        list_requirements = {
+            "requirements": {
+                "requirement_spec.target_users": 1,
+                "requirement_spec.core_features": 2,
+                "task_breakdown.milestones": 2,
+                "task_breakdown.priorities": 2,
+            },
+            "architecture": {
+                "core_modules": 3,
+                "data_flow": 2,
+                "key_decisions": 2,
+                "adrs": 1,
+            },
+            "backend_design": {
+                "service_boundary": 2,
+                "entities": 2,
+                "api_contracts": 2,
+                "observability": 2,
+            },
+            "frontend_design": {
+                "page_tree": 2,
+                "component_map": 3,
+                "api_bindings": 2,
+            },
+            "ai_design": {
+                "provider_strategy": 2,
+                "prompt_policy": 2,
+                "guardrails": 2,
+            },
+            "quality_assurance": {
+                "coverage_focus": 2,
+                "core_scenarios": 2,
+                "acceptance_criteria": 2,
+            },
+            "consistency_review": {
+                "aligned_areas": 1,
+                "conflicts": 1,
+                "next_actions": 1,
+            },
+        }.get(stage.step_code, {})
+        for path, minimum in list_requirements.items():
+            self._assert_min_items(payload, path, minimum, stage.step_code)
+
+        notes = [
+            f"已通过基础质量门禁：识别到 {len(text_fragments)} 段文本，累计 {combined_length} 个字符。",
+            f"当前运行模式：{runtime_mode}。",
+        ]
+        if runtime_mode == "template":
+            notes.append("当前产物属于显式 template 草稿，仅适合流程预演和结构校对。")
+        return notes
+
+    def _collect_text_fragments(self, value: Any) -> List[str]:
+        if isinstance(value, str):
+            cleaned = value.strip()
+            return [cleaned] if cleaned else []
+        if isinstance(value, dict):
+            fragments: List[str] = []
+            for item in value.values():
+                fragments.extend(self._collect_text_fragments(item))
+            return fragments
+        if isinstance(value, list):
+            fragments: List[str] = []
+            for item in value:
+                fragments.extend(self._collect_text_fragments(item))
+            return fragments
+        return []
+
+    def _read_nested_value(self, payload: Dict[str, Any], path: str) -> Any:
+        current: Any = payload
+        for segment in path.split("."):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(segment)
+        return current
+
+    def _assert_min_items(self, payload: Dict[str, Any], path: str, minimum: int, stage_code: str) -> None:
+        current = self._read_nested_value(payload, path)
+        count = len(current) if isinstance(current, list) else 0
+        if count < minimum:
+            raise ValueError(
+                f"阶段 {stage_code} 未通过质量门禁：字段 '{path}' 至少需要 {minimum} 项，当前为 {count} 项。"
+            )
+
+    def _render_markdown(
+        self,
+        stage: StageDefinition,
+        payload: Dict[str, Any],
+        *,
+        runtime_mode: str,
+        quality_notes: List[str],
+    ) -> str:
+        renderer = getattr(self, f"_render_{stage.step_code}_markdown", None)
+        body_lines = renderer(payload) if callable(renderer) else self._render_generic_markdown(payload)
+
+        lines = [
+            f"# {stage.artifact_title}",
+            "",
+            "## 文档元信息",
+            "",
+            "| 字段 | 内容 |",
+            "| --- | --- |",
+            f"| 阶段 | `{stage.step_code}` |",
+            f"| 运行模式 | `{runtime_mode}` |",
+            "",
+        ]
+        if runtime_mode == "template":
+            lines.extend(
+                [
+                    "> ⚠️ 当前文档由显式 template 草稿模式生成，仅供流程演示与结构预览，不能作为正式设计结论。",
+                    "",
+                ]
+            )
+        lines.extend(["## 质量检查", ""])
+        lines.extend(self._render_bullet_list(quality_notes))
+        lines.extend(["", *body_lines])
+        return "\n".join(lines).strip()
+
+    def _render_requirements_markdown(self, payload: Dict[str, Any]) -> List[str]:
+        spec = payload.get("requirement_spec") or {}
+        breakdown = payload.get("task_breakdown") or {}
+        milestone_rows = []
+        for item in breakdown.get("milestones", []):
+            if not isinstance(item, dict):
+                continue
+            milestone_rows.append(
+                [
+                    item.get("title", ""),
+                    item.get("owner_role", ""),
+                    item.get("objective", ""),
+                    item.get("deliverable", ""),
+                ]
+            )
+
+        lines = [
+            "## 项目概述",
+            "",
+            f"**项目名称**：{spec.get('project_name', '未命名项目')}",
+            "",
+            f"**问题陈述**：{spec.get('problem_statement', '')}",
+            "",
+            "## 目标用户",
+            "",
+            *self._render_bullet_list(spec.get("target_users", [])),
+            "",
+            "## 核心功能",
+            "",
+            *self._render_bullet_list(spec.get("core_features", [])),
+            "",
+            "## 非功能要求",
+            "",
+            *self._render_bullet_list(spec.get("non_functional_requirements", [])),
+            "",
+            "## 约束条件",
+            "",
+            *self._render_bullet_list(spec.get("constraints", [])),
+            "",
+            "## 假设前提",
+            "",
+            *self._render_bullet_list(spec.get("assumptions", [])),
+            "",
+            "## 待确认问题",
+            "",
+            *self._render_bullet_list(spec.get("open_questions", [])),
+            "",
+            "## 任务拆解",
+            "",
+            *self._render_markdown_table(
+                ["里程碑", "负责角色", "目标", "交付物"],
+                milestone_rows,
+            ),
+            "",
+            "## 实施优先级",
+            "",
+            *self._render_bullet_list(breakdown.get("priorities", [])),
+            "",
+            "## 澄清清单",
+            "",
+            *self._render_bullet_list(breakdown.get("clarification_list", [])),
+        ]
+        return lines
+
+    def _render_architecture_markdown(self, payload: Dict[str, Any]) -> List[str]:
+        adr_rows = []
+        for item in payload.get("adrs", []):
+            if not isinstance(item, dict):
+                continue
+            adr_rows.append(
+                [
+                    item.get("title", ""),
+                    item.get("decision", ""),
+                    item.get("rationale", ""),
+                    item.get("trade_off", ""),
+                ]
+            )
+
+        return [
+            "## 架构概览",
+            "",
+            f"**架构风格**：{payload.get('architecture_style', '')}",
+            "",
+            "## 核心模块",
+            "",
+            *self._render_bullet_list(payload.get("core_modules", [])),
+            "",
+            "## 关键数据流",
+            "",
+            *self._render_numbered_list(payload.get("data_flow", [])),
+            "",
+            "## 部署单元",
+            "",
+            *self._render_bullet_list(payload.get("deployment_units", [])),
+            "",
+            "## 关键决策",
+            "",
+            *self._render_bullet_list(payload.get("key_decisions", [])),
+            "",
+            "## ADR 记录",
+            "",
+            *self._render_markdown_table(
+                ["标题", "决策", "原因", "代价 / 权衡"],
+                adr_rows,
+            ),
+            "",
+            "## 主要风险",
+            "",
+            *self._render_bullet_list(payload.get("risks", [])),
+        ]
+
+    def _render_backend_design_markdown(self, payload: Dict[str, Any]) -> List[str]:
+        api_rows = []
+        for item in payload.get("api_contracts", []):
+            if not isinstance(item, dict):
+                continue
+            api_rows.append(
+                [
+                    item.get("method", ""),
+                    item.get("path", ""),
+                    item.get("summary", ""),
+                    item.get("request_shape", ""),
+                    item.get("response_shape", ""),
+                ]
+            )
+
+        lines = [
+            "## 服务边界",
+            "",
+            *self._render_bullet_list(payload.get("service_boundary", [])),
+            "",
+            "## 领域实体",
+            "",
+        ]
+        for entity in payload.get("entities", []):
+            if not isinstance(entity, dict):
+                continue
+            lines.extend(
+                [
+                    f"### 实体：`{entity.get('name', 'unknown')}`",
+                    "",
+                    f"- **用途**：{entity.get('purpose', '')}",
+                    f"- **关键字段**：{self._format_inline_list(entity.get('key_fields', []))}",
+                    "",
+                ]
+            )
+
+        lines.extend(
+            [
+                "## API 契约",
+                "",
+                *self._render_markdown_table(
+                    ["方法", "路径", "说明", "请求", "响应"],
+                    api_rows,
+                ),
+                "",
+                "## 异步策略",
+                "",
+                *self._render_bullet_list(payload.get("async_strategy", [])),
+                "",
+                "## 可观测性",
+                "",
+                *self._render_bullet_list(payload.get("observability", [])),
+                "",
+                "## 主要风险",
+                "",
+                *self._render_bullet_list(payload.get("risks", [])),
+            ]
+        )
+        return lines
+
+    def _render_frontend_design_markdown(self, payload: Dict[str, Any]) -> List[str]:
+        lines = [
+            "## 页面结构",
+            "",
+        ]
+        for page in payload.get("page_tree", []):
+            if not isinstance(page, dict):
+                continue
+            lines.extend(
+                [
+                    f"### 页面：{page.get('page_name', '未命名页面')}",
+                    "",
+                    f"- **目标**：{page.get('goal', '')}",
+                    f"- **关键区域**：{self._format_inline_list(page.get('key_sections', []))}",
+                    "",
+                ]
+            )
+
+        lines.extend(
+            [
+                "## 组件边界",
+                "",
+                *self._render_bullet_list(payload.get("component_map", [])),
+                "",
+                "## 状态管理",
+                "",
+                *self._render_bullet_list(payload.get("state_slices", [])),
+                "",
+                "## API 绑定",
+                "",
+                *self._render_bullet_list(payload.get("api_bindings", [])),
+                "",
+                "## 实时更新策略",
+                "",
+                *self._render_bullet_list(payload.get("realtime_strategy", [])),
+            ]
+        )
+        return lines
+
+    def _render_ai_design_markdown(self, payload: Dict[str, Any]) -> List[str]:
+        return [
+            "## Provider 策略",
+            "",
+            *self._render_bullet_list(payload.get("provider_strategy", [])),
+            "",
+            "## 模型策略",
+            "",
+            *self._render_bullet_list(payload.get("model_policy", [])),
+            "",
+            "## Prompt 策略",
+            "",
+            *self._render_bullet_list(payload.get("prompt_policy", [])),
+            "",
+            "## 输出 Schema",
+            "",
+            *self._render_bullet_list(payload.get("output_schemas", [])),
+            "",
+            "## 评估计划",
+            "",
+            *self._render_bullet_list(payload.get("evaluation_plan", [])),
+            "",
+            "## Guardrails",
+            "",
+            *self._render_bullet_list(payload.get("guardrails", [])),
+        ]
+
+    def _render_quality_assurance_markdown(self, payload: Dict[str, Any]) -> List[str]:
+        scenario_rows = []
+        for item in payload.get("core_scenarios", []):
+            if not isinstance(item, dict):
+                continue
+            scenario_rows.append(
+                [
+                    item.get("title", ""),
+                    item.get("category", ""),
+                    item.get("expected_result", ""),
+                ]
+            )
+
+        return [
+            "## 覆盖重点",
+            "",
+            *self._render_bullet_list(payload.get("coverage_focus", [])),
+            "",
+            "## 核心测试场景",
+            "",
+            *self._render_markdown_table(["场景", "类别", "期望结果"], scenario_rows),
+            "",
+            "## 验收标准",
+            "",
+            *self._render_bullet_list(payload.get("acceptance_criteria", [])),
+            "",
+            "## 风险清单",
+            "",
+            *self._render_bullet_list(payload.get("risk_checklist", [])),
+        ]
+
+    def _render_consistency_review_markdown(self, payload: Dict[str, Any]) -> List[str]:
+        return [
+            "## 总体结论",
+            "",
+            f"**一致性评分**：{payload.get('coherence_score', 0)} / 100",
+            "",
+            "## 已对齐内容",
+            "",
+            *self._render_bullet_list(payload.get("aligned_areas", [])),
+            "",
+            "## 当前冲突",
+            "",
+            *self._render_bullet_list(payload.get("conflicts", [])),
+            "",
+            "## 后续动作",
+            "",
+            *self._render_bullet_list(payload.get("next_actions", [])),
+        ]
+
+    def _render_generic_markdown(self, payload: Dict[str, Any]) -> List[str]:
+        lines: List[str] = []
         for key, value in payload.items():
             if key.startswith("_"):
                 continue
-            lines.append(f"## {key}")
-            lines.append("")
+            lines.extend([f"## {key}", ""])
             if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, dict):
-                        lines.append(f"- `{json.dumps(item, ensure_ascii=False)}`")
-                    else:
-                        lines.append(f"- {item}")
+                lines.extend(self._render_bullet_list(value))
             elif isinstance(value, dict):
-                lines.append("```json")
-                lines.append(json.dumps(value, ensure_ascii=False, indent=2))
-                lines.append("```")
+                lines.extend(self._render_bullet_list([json.dumps(value, ensure_ascii=False)]))
             else:
                 lines.append(str(value))
             lines.append("")
-        return "\n".join(lines).strip()
+        return lines
+
+    def _render_bullet_list(self, values: List[Any]) -> List[str]:
+        cleaned_values = [self._normalize_inline_text(value) for value in values if self._normalize_inline_text(value)]
+        if not cleaned_values:
+            return ["- 暂无"]
+        return [f"- {item}" for item in cleaned_values]
+
+    def _render_numbered_list(self, values: List[Any]) -> List[str]:
+        cleaned_values = [self._normalize_inline_text(value) for value in values if self._normalize_inline_text(value)]
+        if not cleaned_values:
+            return ["1. 暂无"]
+        return [f"{index}. {item}" for index, item in enumerate(cleaned_values, start=1)]
+
+    def _render_markdown_table(self, headers: List[str], rows: List[List[Any]]) -> List[str]:
+        normalized_rows = rows or [["暂无" for _ in headers]]
+        lines = [
+            "| " + " | ".join(headers) + " |",
+            "| " + " | ".join("---" for _ in headers) + " |",
+        ]
+        for row in normalized_rows:
+            padded_row = list(row)[: len(headers)]
+            if len(padded_row) < len(headers):
+                padded_row.extend([""] * (len(headers) - len(padded_row)))
+            lines.append(
+                "| " + " | ".join(self._escape_markdown_cell(item) for item in padded_row) + " |"
+            )
+        return lines
+
+    def _format_inline_list(self, values: List[Any]) -> str:
+        cleaned_values = [self._normalize_inline_text(value) for value in values if self._normalize_inline_text(value)]
+        if not cleaned_values:
+            return "暂无"
+        return "、".join(f"`{item}`" for item in cleaned_values)
+
+    def _normalize_inline_text(self, value: Any) -> str:
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value).replace("\n", " ").strip()
+
+    def _escape_markdown_cell(self, value: Any) -> str:
+        return self._normalize_inline_text(value).replace("|", "\\|")

@@ -22,12 +22,50 @@ class CrewAIStageRunResult:
     completion_tokens: int
 
 
+@dataclass
+class ResolvedRuntimeSettings:
+    provider_name: str
+    base_url: str
+    api_key: str
+    model: str
+
+
 class CrewAIStageRunner:
     def __init__(self, runtime_dir: Path | None = None, runtime_config: RuntimeLLMConfig | None = None):
         self.runtime_dir = runtime_dir or settings.runtime_dir
         self.runtime_config = runtime_config
 
     def resolve_model_name(self, agent_profile: ResolvedAgentProfile) -> str:
+        return self.resolve_runtime_settings(agent_profile).model
+
+    def resolve_runtime_settings(self, agent_profile: ResolvedAgentProfile) -> ResolvedRuntimeSettings:
+        override = self.runtime_config.agent_overrides.get(agent_profile.agent_code) if self.runtime_config else None
+        if override and override.override_enabled:
+            return ResolvedRuntimeSettings(
+                provider_name=override.provider_name.strip()
+                or (self.runtime_config.provider_name.strip() if self.runtime_config else "")
+                or "OpenAI Compatible",
+                base_url=override.base_url.strip()
+                or (self.runtime_config.base_url.strip() if self.runtime_config else "")
+                or settings.openai_base_url,
+                api_key=override.api_key.strip()
+                or (self.runtime_config.api_key.strip() if self.runtime_config else "")
+                or settings.openai_api_key,
+                model=override.default_model.strip() or self._resolve_account_or_role_model(agent_profile),
+            )
+
+        return ResolvedRuntimeSettings(
+            provider_name=(self.runtime_config.provider_name.strip() if self.runtime_config else "") or "OpenAI Compatible",
+            base_url=(self.runtime_config.base_url.strip() if self.runtime_config else "") or settings.openai_base_url,
+            api_key=(self.runtime_config.api_key.strip() if self.runtime_config else "") or settings.openai_api_key,
+            model=self._resolve_account_or_role_model(agent_profile),
+        )
+
+    def _resolve_account_or_role_model(self, agent_profile: ResolvedAgentProfile) -> str:
+        if self.runtime_config:
+            role_override = self.runtime_config.agent_model_overrides.get(agent_profile.agent_code, "").strip()
+            if role_override:
+                return role_override
         if self.runtime_config and self.runtime_config.default_model.strip():
             return self.runtime_config.default_model.strip()
         if agent_profile.model.strip():
@@ -170,9 +208,10 @@ class CrewAIStageRunner:
         return any(marker in message for marker in markers)
 
     def _should_skip_structured_output(self, agent_profile: ResolvedAgentProfile) -> bool:
-        provider_name = (self.runtime_config.provider_name if self.runtime_config else "").lower()
-        base_url = (self.runtime_config.base_url if self.runtime_config else settings.openai_base_url).lower()
-        model_name = self.resolve_model_name(agent_profile).lower()
+        runtime = self.resolve_runtime_settings(agent_profile)
+        provider_name = runtime.provider_name.lower()
+        base_url = runtime.base_url.lower()
+        model_name = runtime.model.lower()
         hints = (provider_name, base_url, model_name)
         return any("deepseek" in hint for hint in hints if hint)
 
@@ -183,11 +222,11 @@ class CrewAIStageRunner:
         os.environ.setdefault("CREWAI_STORAGE_DIR", "se-agent-studio")
 
     def _build_llm(self, llm_cls: type[Any], agent_profile: ResolvedAgentProfile) -> Any:
-        model = self.resolve_model_name(agent_profile)
+        runtime = self.resolve_runtime_settings(agent_profile)
         return llm_cls(
-            model=model,
-            api_key=(self.runtime_config.api_key if self.runtime_config else settings.openai_api_key) or None,
-            base_url=(self.runtime_config.base_url if self.runtime_config else settings.openai_base_url) or None,
+            model=runtime.model,
+            api_key=runtime.api_key or None,
+            base_url=runtime.base_url or None,
             temperature=agent_profile.temperature,
             timeout=settings.llm_timeout_seconds,
         )

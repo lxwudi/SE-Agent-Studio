@@ -8,7 +8,7 @@ from app.core.clock import utc_now
 from app.core.config import settings
 from app.db.models import FlowRun, RunEvent, User
 from app.db.session import session_scope
-from app.orchestrators.flows.technical_design_flow import TechnicalDesignFlow
+from app.orchestrators.flows.registry import create_flow_runner, resolve_flow_event_source
 from app.repositories.catalog_repository import CatalogRepository
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.run_repository import RunRepository
@@ -56,7 +56,7 @@ class RunService:
             status="QUEUED",
             current_stage="queued",
             input_requirement=payload.requirement_text,
-            state_json={},
+            state_json={"workflow_code": workflow.workflow_code},
         )
         flow_run = self.run_repository.create_run(flow_run)
         project.requirement_text = payload.requirement_text
@@ -72,6 +72,7 @@ class RunService:
                 error_message=str(exc),
                 event_type="flow.dispatch_failed",
                 phase="dispatch",
+                event_source=resolve_flow_event_source(self.db, flow_run),
             )
             raise
 
@@ -151,12 +152,13 @@ class RunService:
         if run.status not in {"FAILED", "CANCELLED"}:
             return False
 
+        self.run_repository.clear_run_history(run.id)
         run.status = "QUEUED"
         run.current_stage = "queued"
         run.error_message = ""
         run.finished_at = None
         run.started_at = None
-        run.state_json = {}
+        run.state_json = {"workflow_code": run.workflow_code}
         self.run_repository.save_run(run)
         try:
             self.dispatch_run(run.run_uid)
@@ -167,6 +169,7 @@ class RunService:
                 error_message=str(exc),
                 event_type="flow.dispatch_failed",
                 phase="dispatch",
+                event_source=resolve_flow_event_source(self.db, run),
             )
             raise
         return FlowRunResponse.model_validate(run)
@@ -179,16 +182,22 @@ def mark_flow_run_failed(
     error_message: str,
     event_type: str = "flow.failed",
     phase: str = "execution",
+    event_source: str = "TechnicalDesignFlow",
 ) -> None:
     flow_run.status = "FAILED"
     flow_run.error_message = error_message
     flow_run.finished_at = utc_now()
     run_repository.save_run(flow_run)
+    run_repository.finalize_open_tasks(
+        flow_run.id,
+        status="FAILED",
+        error_message=error_message,
+    )
     run_repository.create_event(
         RunEvent(
             flow_run_id=flow_run.id,
             event_type=event_type,
-            event_source="TechnicalDesignFlow",
+            event_source=event_source,
             payload_json={
                 "error": error_message,
                 "phase": phase,
@@ -204,7 +213,7 @@ def execute_run_in_session(run_uid: str, *, raise_on_failure: bool = False) -> N
         if not flow_run:
             return
         try:
-            flow = TechnicalDesignFlow(db, flow_run)
+            flow = create_flow_runner(db, flow_run)
             flow.run()
         except Exception as exc:
             db.refresh(flow_run)
@@ -215,6 +224,7 @@ def execute_run_in_session(run_uid: str, *, raise_on_failure: bool = False) -> N
                 flow_run,
                 error_message=str(exc),
                 phase="execution",
+                event_source=resolve_flow_event_source(db, flow_run),
             )
             if raise_on_failure:
                 raise

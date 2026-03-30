@@ -41,6 +41,7 @@ class FlowRunDetail(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     run_uid: str
+    workflow_code: str
     status: str
     current_stage: str
     input_requirement: str

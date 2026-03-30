@@ -25,3 +25,12 @@ export function updateProject(
   return api.patch<Project>(`/api/v1/projects/${projectUid}`, payload);
 }
 
+export function deleteProject(projectUid: string) {
+  return api.delete(`/api/v1/projects/${projectUid}`);
+}
+
+export function downloadProjectPackage(projectUid: string) {
+  return api.get<Blob>(`/api/v1/projects/${projectUid}/package`, {
+    responseType: "blob",
+  });
+}

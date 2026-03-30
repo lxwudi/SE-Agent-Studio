@@ -14,6 +14,7 @@ export interface ProjectDetail extends Project {
 
 export interface FlowRun {
   run_uid: string;
+  workflow_code: string;
   status: string;
   current_stage: string;
   input_requirement: string;
@@ -60,6 +61,28 @@ export interface Artifact {
 export interface ArtifactDetail extends Artifact {
   content_markdown: string;
   content_json: Record<string, unknown>;
+}
+
+export interface DeliveryCommandSpec {
+  label: string;
+  command: string;
+  purpose: string;
+}
+
+export interface DeliveryGeneratedFile {
+  path: string;
+  language: string;
+  purpose: string;
+  content: string;
+}
+
+export interface DeliveryVerificationResult {
+  label: string;
+  command: string;
+  success: boolean;
+  exit_code: number;
+  summary: string;
+  output: string;
 }
 
 export interface AgentProfile {
@@ -114,9 +137,35 @@ export interface UserLLMConfig {
   provider_name: string;
   base_url: string;
   default_model: string;
+  agent_model_overrides: Record<string, string>;
+  available_roles: Array<{
+    agent_code: string;
+    display_name: string;
+    role_default_model: string;
+    enabled: boolean;
+    override_enabled: boolean;
+    provider_name: string;
+    base_url: string;
+    default_model: string;
+    has_api_key: boolean;
+    masked_api_key: string;
+    is_ready: boolean;
+  }>;
   enabled: boolean;
   has_api_key: boolean;
   masked_api_key: string;
   is_ready: boolean;
   updated_at?: string | null;
+}
+
+export interface DiscoveredModelOption {
+  model_id: string;
+  owned_by?: string | null;
+}
+
+export interface DiscoverModelsResponse {
+  provider_name: string;
+  base_url: string;
+  used_saved_api_key: boolean;
+  models: DiscoveredModelOption[];
 }

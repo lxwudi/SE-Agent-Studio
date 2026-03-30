@@ -1,8 +1,9 @@
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.core.clock import utc_now
 from app.db.models import Artifact, FlowRun, Project, RunEvent, TaskRun
 
 
@@ -63,3 +64,27 @@ class RunRepository:
         self.db.commit()
         self.db.refresh(artifact)
         return artifact
+
+    def finalize_open_tasks(self, flow_run_id: int, *, status: str, error_message: str = "") -> None:
+        stmt = select(TaskRun).where(
+            TaskRun.flow_run_id == flow_run_id,
+            TaskRun.status.in_(("PENDING", "RUNNING")),
+        )
+        open_tasks = list(self.db.scalars(stmt).all())
+        if not open_tasks:
+            return
+
+        finished_at = utc_now()
+        for task in open_tasks:
+            task.status = status
+            task.finished_at = finished_at
+            if error_message and not task.error_message:
+                task.error_message = error_message
+            self.db.add(task)
+        self.db.commit()
+
+    def clear_run_history(self, flow_run_id: int) -> None:
+        self.db.execute(delete(RunEvent).where(RunEvent.flow_run_id == flow_run_id))
+        self.db.execute(delete(Artifact).where(Artifact.flow_run_id == flow_run_id))
+        self.db.execute(delete(TaskRun).where(TaskRun.flow_run_id == flow_run_id))
+        self.db.commit()

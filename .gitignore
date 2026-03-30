@@ -14,3 +14,4 @@ backend/.runtime/
 backend/se_agent_studio.db
 frontend/node_modules/
 frontend/dist/
+.delivery-workspaces/

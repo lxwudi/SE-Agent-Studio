@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.clock import utc_now
@@ -22,6 +22,8 @@ class UserLLMConfig(Base):
     base_url: Mapped[str] = mapped_column(String(255), default="https://api.openai.com/v1")
     api_key_encrypted: Mapped[str] = mapped_column(Text, default="")
     default_model: Mapped[str] = mapped_column(String(120), default="")
+    agent_model_overrides: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    agent_runtime_overrides: Mapped[dict[str, dict[str, object]]] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[dt.datetime] = mapped_column(

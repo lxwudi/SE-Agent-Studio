@@ -36,6 +36,14 @@ class FlowRun(Base):
     events: Mapped[List["RunEvent"]] = relationship(back_populates="flow_run", cascade="all, delete-orphan")
     artifacts: Mapped[List["Artifact"]] = relationship(back_populates="flow_run", cascade="all, delete-orphan")
 
+    @property
+    def workflow_code(self) -> str:
+        if isinstance(self.state_json, dict):
+            value = self.state_json.get("workflow_code")
+            if isinstance(value, str):
+                return value
+        return ""
+
 
 class TaskRun(Base):
     __tablename__ = "task_runs"

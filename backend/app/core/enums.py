@@ -31,4 +31,9 @@ class ArtifactType(str, Enum):
     AI_INTEGRATION_SPEC = "ai_integration_spec"
     API_TEST_PLAN = "api_test_plan"
     CONSISTENCY_REVIEW = "consistency_review"
-
+    DELIVERY_REQUIREMENTS = "delivery_requirements"
+    SOLUTION_DELIVERY_PLAN = "solution_delivery_plan"
+    BACKEND_CODE_BUNDLE = "backend_code_bundle"
+    FRONTEND_CODE_BUNDLE = "frontend_code_bundle"
+    INTEGRATION_BUNDLE = "integration_bundle"
+    DELIVERY_HANDOFF = "delivery_handoff"
