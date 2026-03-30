@@ -7,30 +7,88 @@
 - `backend/`: 基于 `uv` 管理的 FastAPI 后端
 - `frontend/`: 基于 `pnpm` 管理的 Vue 3 前端
 
-## 推荐启动顺序
+## 本地最快启动：不需要 Redis 和 MySQL
+
+本项目现在支持直接用 `SQLite + thread` 模式本地启动。
+
+这条路径下你不需要：
+
+- `docker compose`
+- `MySQL`
+- `Redis`
+- `Celery worker`
+
+只需要后端一个进程和前端一个进程就能跑起来。
+
+### 1. 准备后端 `.env`
+
+```bash
+cd backend
+cp .env.example .env
+```
+
+把 `backend/.env` 里至少这几项改成下面这样：
+
+```env
+DATABASE_URL=sqlite:///./.runtime/se_agent_studio.db
+EXECUTION_MODE=thread
+AGENT_RUNTIME_MODE=auto
+```
+
+说明：
+
+- `DATABASE_URL=sqlite:///./.runtime/se_agent_studio.db` 表示本地直接用 SQLite 文件库
+- `EXECUTION_MODE=thread` 表示运行任务时直接用单进程线程模式，不走 Celery
+- 这种模式下 `REDIS_URL` 可以保留原样，不会真的用到
+
+### 2. 启动后端
+
+```bash
+uv sync --extra ai-runtime --extra dev
+uv run alembic upgrade head
+uv run python scripts/bootstrap_data.py
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+### 3. 启动前端
+
+```bash
+cd frontend
+pnpm install
+pnpm dev --host 127.0.0.1 --port 5173
+```
+
+### 4. 打开页面
+
+- 前端：`http://127.0.0.1:5173/`
+- 后端文档：`http://127.0.0.1:8000/docs`
+
+## 可选：切到 MySQL + Redis + Celery
+
+只有在你明确要跑多进程 / 队列模式时，才需要下面这套：
 
 ```bash
 docker compose up -d mysql redis
 ```
 
+然后把 `backend/.env` 改回类似下面这样：
+
+```env
+DATABASE_URL=mysql+pymysql://se_agent:se_agent@127.0.0.1:3306/se_agent_studio
+EXECUTION_MODE=celery
+REDIS_URL=redis://localhost:6379/0
+```
+
+再分别启动：
+
 ```bash
 cd backend
-cp .env.example .env
-uv sync --extra ai-runtime --extra dev
-uv run alembic upgrade head
-uv run python scripts/bootstrap_data.py
-uv run uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 ```bash
 cd backend
 uv run celery -A app.workers.celery_app:celery_app worker --loglevel=info
-```
-
-```bash
-cd frontend
-pnpm install
-pnpm dev
 ```
 
 ## 默认登录账号
@@ -95,17 +153,23 @@ pnpm dev
 
 ## 执行模式
 
-正式部署默认使用 `EXECUTION_MODE=celery`，运行创建后会把任务投递给独立 Worker：
-
-- Web API：负责鉴权、创建项目、创建运行、查询状态
-- Celery Worker：负责真正执行多阶段 Flow
-- Redis：作为 Broker / Result Backend
-
-如果你只是想在本地快速单进程演示，可以显式改成：
+本地开发最推荐：
 
 ```bash
 EXECUTION_MODE=thread
 ```
+
+这种模式下：
+
+- 不需要 Redis
+- 不需要 Celery worker
+- 适合本地调试和演示
+
+正式部署再切到 `EXECUTION_MODE=celery`，运行创建后会把任务投递给独立 Worker：
+
+- Web API：负责鉴权、创建项目、创建运行、查询状态
+- Celery Worker：负责真正执行多阶段 Flow
+- Redis：作为 Broker / Result Backend
 
 线程模式只建议用于开发调试；正式环境请保持 `celery`，并确保 `uvicorn` 与 `celery worker` 同时运行。
 
