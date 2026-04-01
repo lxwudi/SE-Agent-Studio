@@ -1,6 +1,6 @@
 # SE-Agent Studio
 
-根据《SE-Agent Studio 开发前技术设计文档》推进的可运行第一版。
+根据《SE-Agent Studio 技术设计文档》推进的可运行第一版。
 
 当前仓库拆成两部分：
 
