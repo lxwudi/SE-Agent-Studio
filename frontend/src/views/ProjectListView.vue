@@ -1,62 +1,55 @@
 <template>
   <div class="page">
-    <section class="hero-banner">
-      <div class="hero-panel">
-        <p class="eyebrow">项目入口</p>
-        <h2>把项目需求推进成可运行的交付成果</h2>
-        <p class="hero-lead">
-          在同一个工作台里录入项目背景、跟进任务进展，并集中查看需求、代码产物、自动验证和交付总结。
-        </p>
-
-        <div class="hero-badges">
+    <section class="workspace-overview">
+      <div class="workspace-overview__content">
+        <p class="eyebrow">项目空间</p>
+        <h2>管理软件交付项目</h2>
+        <p>为每个项目沉淀需求背景、运行记录、代码产物和验证结果。</p>
+        <div class="workspace-overview__meta">
           <span class="chip">需求整理</span>
-          <span class="chip">过程追踪</span>
+          <span class="chip">交付运行</span>
           <span class="chip">成果归档</span>
         </div>
       </div>
 
-      <div class="hero-stats">
-        <div class="glass-panel metric-card metric-card--accent">
-          <small>项目总数</small>
-          <strong>{{ projectStore.projects.length }}</strong>
-          <p>每个项目都保留自己的需求背景、任务记录、代码产物和验证结果。</p>
-        </div>
-
-        <div class="glass-panel metric-card">
-          <small>标准流程</small>
-          <strong>代码交付</strong>
-          <p>系统会按统一顺序生成方案、前后端代码、自动验证与交付总结。</p>
-        </div>
-
-        <div class="glass-panel metric-card">
-          <small>进展同步</small>
-          <strong>实时更新</strong>
-          <p>运行过程中会持续更新阶段状态，方便跟进当前进度。</p>
-        </div>
-
-        <div class="glass-panel metric-card">
-          <small>成果管理</small>
-          <strong>集中归档</strong>
-          <p>每次任务生成的代码包和验证结果都会保留下来，便于查看和复用。</p>
-        </div>
+      <div class="workspace-overview__actions">
+        <el-button type="primary" @click="dialogVisible = true">新建项目</el-button>
       </div>
     </section>
 
-    <div class="page-header">
-      <div>
-        <h2>项目空间</h2>
-        <p>新建项目后，可以继续完善需求，并发起新的交付任务。</p>
+    <section class="metric-strip">
+      <div class="glass-panel metric-card metric-card--accent">
+        <small>项目总数</small>
+        <strong>{{ projectStore.projects.length }}</strong>
+        <p>当前工作台已创建的项目数量。</p>
       </div>
-      <el-button type="primary" @click="dialogVisible = true">新建项目</el-button>
-    </div>
 
-    <div class="glass-panel section-panel">
+      <div class="glass-panel metric-card metric-card--teal">
+        <small>标准流程</small>
+        <strong>代码交付</strong>
+        <p>从需求到代码、验证和交付总结。</p>
+      </div>
+
+      <div class="glass-panel metric-card metric-card--blue">
+        <small>进度同步</small>
+        <strong>实时更新</strong>
+        <p>运行阶段和事件会持续记录。</p>
+      </div>
+
+      <div class="glass-panel metric-card">
+        <small>成果管理</small>
+        <strong>集中归档</strong>
+        <p>代码包与验证结果统一保留。</p>
+      </div>
+    </section>
+
+    <section class="glass-panel table-card">
       <div class="section-heading">
         <div>
           <h3 class="card-title">项目列表</h3>
-          <p class="helper-text">这里展示当前工作台中的全部项目，点击卡片进入项目详情。</p>
+          <p class="helper-text">点击项目进入详情页，继续完善需求或发起新的交付运行。</p>
         </div>
-        <span class="chip">全部项目</span>
+        <span class="chip">共 {{ projectStore.projects.length }} 个</span>
       </div>
 
       <div v-if="projectStore.projects.length" class="project-grid">
@@ -66,7 +59,13 @@
           class="project-card project-card--interactive"
           @click="goProject(project.uid)"
         >
-          <h3>{{ project.name }}</h3>
+          <div class="project-card__header">
+            <span class="project-avatar">{{ getProjectInitial(project.name) }}</span>
+            <div>
+              <h3>{{ project.name }}</h3>
+              <span class="status-pill">可继续交付</span>
+            </div>
+          </div>
           <p>{{ project.description || "当前还没有填写项目描述，可以进详情页继续完善。" }}</p>
           <div class="project-card__meta">
             <span>UID · {{ project.uid.slice(0, 10) }}</span>
@@ -90,7 +89,7 @@
         <h4>还没有项目</h4>
         <p>先创建第一个项目，把需求整理进去，再开始生成可运行交付成果。</p>
       </div>
-    </div>
+    </section>
 
     <el-dialog v-model="dialogVisible" title="新建项目" width="560px">
       <el-form :model="form" label-position="top" class="dialog-form">
@@ -177,5 +176,17 @@ async function handleDelete(projectUid: string, projectName: string) {
 
 function formatDate(value: string) {
   return new Date(value).toLocaleDateString();
+}
+
+function getProjectInitial(name: string) {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return "SE";
+  }
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length >= 2) {
+    return words.slice(0, 2).map((word) => word[0]).join("").toUpperCase();
+  }
+  return trimmed.slice(0, 2).toUpperCase();
 }
 </script>

@@ -2,7 +2,7 @@
   <div class="auth-page">
     <div class="login-card glass-panel">
       <div class="login-card__brand">
-        <div class="brand-mark">SE</div>
+        <AppLogo class="brand-mark" />
         <div>
           <p class="eyebrow">SE Agent Studio</p>
           <h1>登录工作台</h1>
@@ -30,6 +30,7 @@ import { reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 
+import AppLogo from "../components/AppLogo.vue";
 import { useAuthStore } from "../stores/auth";
 
 

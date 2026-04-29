@@ -1,22 +1,22 @@
 <template>
   <div class="app-shell">
     <aside class="sidebar">
-      <div class="brand-mark">SE</div>
-
-      <div class="brand">
-        <p class="eyebrow eyebrow--light">SE Agent Studio</p>
-        <h1>软件工程多智能体工作台</h1>
-        <p>把项目需求、交付过程、代码产物和验证结果放进同一个清晰可追踪的协作空间。</p>
-      </div>
+      <RouterLink class="brand-lockup" to="/projects" aria-label="SE Agent Studio">
+        <AppLogo class="brand-mark" />
+        <span>
+          <strong>SE Agent Studio</strong>
+          <small>软件工程交付工作台</small>
+        </span>
+      </RouterLink>
 
       <div class="sidebar-overview">
         <div class="sidebar-stat">
-          <span>默认流程</span>
+          <span>当前流程</span>
           <strong>代码交付 v1</strong>
         </div>
         <div class="sidebar-stat">
-          <span>成果形式</span>
-          <strong>代码 + 验证</strong>
+          <span>交付资产</span>
+          <strong>代码与验证</strong>
         </div>
       </div>
 
@@ -27,9 +27,8 @@
       </nav>
 
       <div class="sidebar-brief">
-        <p class="eyebrow eyebrow--light">工作台说明</p>
-        <h4>项目需求到可运行交付</h4>
-        <p>在一个界面里查看项目需求、任务进展、最终代码和自动验证结果，方便演示、沟通和回看。</p>
+        <h4>交付闭环</h4>
+        <p>需求、运行记录、代码产物和验证结果集中归档。</p>
       </div>
 
       <div class="sidebar-profile" v-if="authStore.user">
@@ -42,7 +41,7 @@
     </aside>
 
     <main class="shell-main">
-      <header class="shell-header glass-panel">
+      <header class="shell-header">
         <div>
           <div v-if="backMeta" class="shell-header__lead">
             <el-button class="shell-back-button" plain @click="handleBack">
@@ -55,9 +54,8 @@
         </div>
 
         <div class="shell-badges">
-          <span class="shell-badge">项目协作</span>
-          <span class="shell-badge">进度可追踪</span>
-          <span class="shell-badge">代码可交付</span>
+          <span class="shell-badge">{{ shellMeta.primaryBadge }}</span>
+          <span class="shell-badge">{{ shellMeta.secondaryBadge }}</span>
         </div>
       </header>
 
@@ -70,6 +68,7 @@
 import { computed } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 
+import AppLogo from "../components/AppLogo.vue";
 import { useAuthStore } from "../stores/auth";
 
 
@@ -112,42 +111,54 @@ const shellMeta = computed(() => {
   if (route.path.startsWith("/runs/")) {
     return {
       kicker: "运行进度",
-      title: "查看交付任务的推进情况",
-      description: "在这里跟进阶段状态、异常信息，以及最终生成的代码与验证结果。",
+      title: "交付运行详情",
+      description: "跟进阶段状态、异常信息、代码产物和自动验证结果。",
+      primaryBadge: "阶段追踪",
+      secondaryBadge: "验证结果",
     };
   }
   if (route.path.includes("/artifacts")) {
     return {
       kicker: "产物中心",
-      title: "集中查看本项目的交付产物",
-      description: "把需求、方案、最终代码和自动验证结果统一展示在这里。",
+      title: "交付产物中心",
+      description: "集中查看本项目沉淀的需求、方案、代码和验证资产。",
+      primaryBadge: "成果归档",
+      secondaryBadge: "代码资产",
     };
   }
   if (route.path.startsWith("/admin")) {
     return {
       kicker: "系统配置",
-      title: "查看角色与流程模板",
-      description: "这里展示当前平台启用的角色配置和可用流程，便于统一管理。",
+      title: "角色与流程模板",
+      description: "查看当前平台启用的角色配置、默认模型和标准工作流。",
+      primaryBadge: "角色模板",
+      secondaryBadge: "工作流",
     };
   }
   if (route.path.startsWith("/settings/llm")) {
     return {
       kicker: "模型配置",
-      title: "为当前账号接入自己的云端模型",
-      description: "在这里保存你的 API Key、接口地址和默认模型，运行时会优先使用这套配置。",
+      title: "账号模型配置",
+      description: "维护 API Key、接口地址、默认模型和角色独立配置。",
+      primaryBadge: "账号级配置",
+      secondaryBadge: "角色覆盖",
     };
   }
   if (route.path.startsWith("/projects/")) {
     return {
       kicker: "项目工作台",
-      title: "围绕单个项目推进交付任务",
-      description: "补充项目需求，发起新的代码交付运行，并随时回看历史记录。",
+      title: "项目交付工作台",
+      description: "维护项目需求、发起代码交付运行，并回看历史记录。",
+      primaryBadge: "需求输入",
+      secondaryBadge: "运行历史",
     };
   }
   return {
     kicker: "项目总览",
-    title: "从项目需求进入交付协作",
-    description: "在这里创建项目、整理需求，并开始新的代码交付任务。",
+    title: "项目空间",
+    description: "管理项目、整理需求，并发起新的代码交付任务。",
+    primaryBadge: "项目管理",
+    secondaryBadge: "交付协作",
   };
 });
 

@@ -1,0 +1,48 @@
+<template>
+  <svg viewBox="0 0 64 64" role="img" aria-label="SE Agent Studio logo">
+    <rect width="64" height="64" rx="14" fill="#182230" />
+    <path
+      d="M18 22C24 14 40 14 46 22"
+      fill="none"
+      stroke="#eb6841"
+      stroke-linecap="round"
+      stroke-width="4"
+    />
+    <path
+      d="M18 42C24 50 40 50 46 42"
+      fill="none"
+      stroke="#0f766e"
+      stroke-linecap="round"
+      stroke-width="4"
+    />
+    <path
+      d="M23 28L16 35L23 42"
+      fill="none"
+      stroke="#ffffff"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="4"
+    />
+    <path
+      d="M41 28L48 35L41 42"
+      fill="none"
+      stroke="#ffffff"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="4"
+    />
+    <circle cx="18" cy="22" r="4" fill="#ffffff" />
+    <circle cx="46" cy="22" r="4" fill="#ffffff" />
+    <circle cx="32" cy="32" r="7" fill="#eb6841" />
+    <path
+      d="M28 45L33 50L44 38"
+      fill="none"
+      stroke="#ffffff"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="4"
+    />
+    <circle cx="20" cy="44" r="3" fill="#0f766e" />
+    <circle cx="44" cy="44" r="3" fill="#0f766e" />
+  </svg>
+</template>
